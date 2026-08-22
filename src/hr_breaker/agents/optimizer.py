@@ -149,7 +149,7 @@ def get_optimizer_agent(
         get_pro_model(),
         output_type=OptimizerResult,
         system_prompt=system_prompt,
-        model_settings=get_model_settings(),
+        model_settings=get_model_settings(settings.pro_model),
     )
 
     # Tracks check_content_length calls within this agent run.

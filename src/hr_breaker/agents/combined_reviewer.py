@@ -5,7 +5,7 @@ import fitz
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, BinaryContent
 
-from hr_breaker.config import get_flash_model, get_model_settings
+from hr_breaker.config import get_flash_model, get_model_settings, get_settings
 from hr_breaker.models import JobPosting, OptimizedResume
 from hr_breaker.models.language import Language
 from hr_breaker.services.renderer import get_renderer, RenderError
@@ -146,7 +146,7 @@ def get_combined_reviewer_agent() -> Agent:
         get_flash_model(),
         output_type=CombinedReviewResult,
         system_prompt=SYSTEM_PROMPT,
-        model_settings=get_model_settings(),
+        model_settings=get_model_settings(get_settings().flash_model),
     )
 
     @agent.system_prompt

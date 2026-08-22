@@ -2,7 +2,7 @@ from functools import lru_cache
 
 from pydantic_ai import Agent
 
-from hr_breaker.config import get_flash_model, get_model_settings
+from hr_breaker.config import get_flash_model, get_model_settings, get_settings
 from hr_breaker.models import JobPosting
 from hr_breaker.utils.optimization_telemetry import run_tracked_agent
 
@@ -25,7 +25,7 @@ def get_job_parser_agent() -> Agent:
         get_flash_model(),
         output_type=JobPosting,
         system_prompt=SYSTEM_PROMPT,
-        model_settings=get_model_settings(),
+        model_settings=get_model_settings(get_settings().flash_model),
     )
 
 

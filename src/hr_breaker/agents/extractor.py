@@ -130,7 +130,7 @@ async def extract_document(content_text: str) -> DocumentExtraction:
     model_name = get_settings().flash_model
     _ensure_extraction_credentials(model_name)
     model = get_flash_model()
-    settings = get_model_settings()
+    settings = get_model_settings(model_name)
 
     agents = [
         Agent(model, output_type=PersonalInfo, system_prompt=_CONTACT_PROMPT, model_settings=settings),

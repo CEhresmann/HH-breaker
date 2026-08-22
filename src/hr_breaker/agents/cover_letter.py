@@ -3,7 +3,7 @@
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from hr_breaker.config import get_flash_model, get_model_settings
+from hr_breaker.config import get_flash_model, get_model_settings, get_settings
 from hr_breaker.models import JobPosting, OptimizedResume
 from hr_breaker.models.language import Language, get_language_safe
 from hr_breaker.utils.retry import run_with_retry
@@ -47,7 +47,7 @@ def get_cover_letter_agent() -> Agent:
         get_flash_model(),
         output_type=CoverLetter,
         system_prompt=SYSTEM_PROMPT,
-        model_settings=get_model_settings(),
+        model_settings=get_model_settings(get_settings().flash_model),
     )
 
 

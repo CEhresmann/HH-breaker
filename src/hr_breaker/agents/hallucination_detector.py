@@ -3,7 +3,7 @@ from datetime import date
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from hr_breaker.config import get_model_settings, get_pro_model
+from hr_breaker.config import get_model_settings, get_pro_model, get_settings
 from hr_breaker.models import FilterResult, OptimizedResume, ResumeSource
 from hr_breaker.models.language import Language
 from hr_breaker.utils.optimization_telemetry import run_tracked_agent
@@ -93,7 +93,7 @@ def get_hallucination_agent(no_shame: bool = False) -> Agent:
         get_pro_model(),
         output_type=HallucinationResult,
         system_prompt=prompt,
-        model_settings=get_model_settings(),
+        model_settings=get_model_settings(get_settings().pro_model),
     )
 
     @agent.system_prompt

@@ -169,6 +169,7 @@ Key model config vars (litellm format):
 - `LLM_MAX_CONCURRENCY` - Process-wide cap on concurrent LLM calls (default: `8`) - lower for providers/tiers with a strict concurrency limit
 - `LLM_CALL_TIMEOUT` - Per-attempt timeout in seconds (default: `90`) - a hang counts as a retryable failure instead of blocking forever
 - `LLM_MIN_CALL_INTERVAL` - Minimum seconds between calls (default: `0`) - raise if a provider's own concurrency slot release lags behind ours (back-to-back calls still get 429'd even at `LLM_MAX_CONCURRENCY=1`)
+- `MOONSHOT_DISABLE_THINKING` - Send `extra_body={"thinking": {"type": "disabled"}}` for `moonshot/` models (default: `true`) - moonshot/kimi models run extended reasoning by default; `get_model_settings(model_name)` needs the model name to scope this to moonshot only
 
 CLI options (settable via env vars, CLI flags override):
 - `HR_BREAKER_OUTPUT` - output path

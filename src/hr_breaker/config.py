@@ -145,6 +145,7 @@ class Settings(BaseSettings):
     llm_max_concurrency: int = 8
     llm_call_timeout: float = 90.0
     llm_min_call_interval: float = 0.0
+    moonshot_disable_thinking: bool = True
 
     def model_post_init(self, __context: Any) -> None:
         if self.gemini_api_key and "GEMINI_API_KEY" not in os.environ:
@@ -317,14 +318,28 @@ def settings_override(overrides: dict | None):
             get_settings.cache_clear()
 
 
-def get_model_settings() -> dict[str, Any] | None:
+def get_model_settings(model_name: str | None = None) -> dict[str, Any] | None:
     """Get model settings with reasoning effort and token cap config."""
     settings = get_settings()
     model_settings: dict[str, Any] = {}
 
-    if settings.reasoning_effort and settings.reasoning_effort != "none":
+    disable_moonshot_thinking = (
+        settings.moonshot_disable_thinking
+        and model_name
+        and model_name.startswith("moonshot/")
+    )
+
+    # Moonshot rejects/ignores reasoning_effort when thinking is explicitly disabled -
+    # the two are mutually exclusive for that provider.
+    if (
+        settings.reasoning_effort
+        and settings.reasoning_effort != "none"
+        and not disable_moonshot_thinking
+    ):
         model_settings["reasoning_effort"] = settings.reasoning_effort
     if settings.max_tokens is not None:
         model_settings["max_tokens"] = settings.max_tokens
+    if disable_moonshot_thinking:
+        model_settings["extra_body"] = {"thinking": {"type": "disabled"}}
 
     return model_settings or None
