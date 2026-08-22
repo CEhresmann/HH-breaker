@@ -1,15 +1,10 @@
 """Batch pipeline: search hh.ru vacancies by trigger keywords, tailor a resume + cover
 letter per new vacancy, optionally submit the application through hh.ru's API.
 
-IMPORTANT mismatch to be aware of (see hh_client module docstring for the API-level
-detail): hh.ru's apply flow ("отклик") references one of the applicant's *existing*
-resumes on hh.ru by `resume_id` - there is no way to attach an arbitrary per-application
-PDF to a negotiation through the public API. So when `live=True`, the *cover letter*
-(generated per vacancy, sent as the negotiation `message`) is the part that is actually
-personalized in the real application. The hr-breaker-tailored PDF is still generated and
-saved locally per vacancy (useful for your own records, or to send manually if an
-employer asks for a resume by email/attachment outside of hh.ru's flow) but is NOT
-attached to the automated hh.ru application itself.
+hh.ru's apply flow references an existing resume by `resume_id`, not an arbitrary
+per-application PDF (see hh_client module docstring). With `live=True`, only the
+cover letter is sent as part of the real application; the tailored PDF is generated
+and saved locally but not attached to it.
 """
 
 import asyncio
@@ -19,7 +14,6 @@ from pathlib import Path
 from typing import Callable
 
 from hr_breaker.agents import write_cover_letter
-from hr_breaker.config import get_settings
 from hr_breaker.models import JobPosting, ResumeSource
 from hr_breaker.models.language import get_language_safe, resolve_target_language
 from hr_breaker.orchestration import optimize_for_job
@@ -43,7 +37,7 @@ class AutoApplyRunSummary:
     applied: int = 0
     skipped_apply_cap: int = 0
     dry_run: bool = True
-    vacancies: list[dict] = field(default_factory=list)  # per-vacancy outcome, for reporting
+    vacancies: list[dict] = field(default_factory=list)
 
 
 def _vacancy_to_job_posting(vacancy: Vacancy, language_code: str = "ru") -> JobPosting:
@@ -116,13 +110,11 @@ async def run_autoapply(
 ) -> AutoApplyRunSummary:
     """Run one pass of the auto-apply pipeline.
 
-    `live=False` (default) is a dry run: vacancies are found, deduped, resumes tailored,
-    cover letters written, PDFs saved - but nothing is sent to hh.ru. Set `live=True` and
-    provide `access_token` + `hh_resume_id` to actually submit applications
-    (`max_apply_per_run` caps how many get sent in a single call, as a runaway-loop
-    backstop - this sends real messages to real employers under your name).
+    `live=False` (default): vacancies are found, deduped, resumes tailored, cover
+    letters written, PDFs saved - nothing is sent to hh.ru. `live=True` requires
+    `access_token` + `hh_resume_id` and submits applications, capped at
+    `max_apply_per_run` per call.
     """
-    settings = get_settings()
     store = store or AutoApplyStore()
     hh = HHClient(access_token=access_token)
     output_dir.mkdir(parents=True, exist_ok=True)

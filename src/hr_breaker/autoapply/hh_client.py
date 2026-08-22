@@ -1,42 +1,24 @@
-"""Thin async client for the hh.ru (HeadHunter) public API.
+"""Async client for the hh.ru (HeadHunter) API: vacancy search, OAuth, applying.
 
-Docs: https://github.com/hhru/api (markdown pointers only - the actual field-level
-schema lives behind https://api.hh.ru/openapi/redoc, backed by
-https://api.hh.ru/openapi/specification/public).
+Docs: https://github.com/hhru/api, schema at https://api.hh.ru/openapi/redoc.
 
-Verified against that spec at the time this was written:
-- `GET /vacancies` (search) is fully public, no auth required, and its query
-  params below are confirmed from the spec.
-- OAuth endpoints (`AUTHORIZE_URL` / `TOKEN_URL`) are hh.ru's long-standing,
-  widely-documented-by-the-community authorization_code flow.
-
-NOT verified against the spec - community-documented only:
-- `apply_to_vacancy()` (`POST /negotiations`). The public OpenAPI spec only
-  exposes `GET /negotiations` - the write/apply operation ("apply-to-vacancy",
-  referenced by the markdown docs) is not in the public schema, which suggests
-  it may be gated to a specific approved application category. The
-  resume_id/vacancy_id/message shape here matches long-running community
-  client libraries, but has NOT been fired against a real account by this
-  code. Test with a single real vacancy (dry_run=False) before trusting this
-  at scale.
+`search_vacancies()` (`GET /vacancies`) is public, no auth required.
+`apply_to_vacancy()` (`POST /negotiations`) is not in the public OpenAPI schema -
+the resume_id/vacancy_id/message shape follows community usage. Validate against
+a real vacancy before relying on it at scale.
 """
 
-import logging
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
-
-logger = logging.getLogger(__name__)
 
 API_BASE = "https://api.hh.ru"
 AUTHORIZE_URL = "https://hh.ru/oauth/authorize"
 TOKEN_URL = "https://hh.ru/oauth/token"
 REQUEST_TIMEOUT = 15.0
 
-# hh.ru asks integrators to identify their app; an empty/generic User-Agent
-# can get throttled or rejected. Override via HH_USER_AGENT if you have your
-# own app name/contact.
+# hh.ru asks integrators to identify their app in the User-Agent header.
 DEFAULT_USER_AGENT = "hr-breaker-autoapply/0.1 (personal use)"
 
 
@@ -160,9 +142,7 @@ class HHClient:
         return resp.json().get("items", [])
 
     async def apply_to_vacancy(self, resume_id: str, vacancy_id: str, message: str | None = None) -> dict:
-        """Submit an application ("отклик") - see module docstring: UNVERIFIED against
-        the public spec, community-documented shape. Validate manually before relying
-        on this for real applications."""
+        """Submit an application ("отклик"). See module docstring."""
         if not self.access_token:
             raise HHApiError("apply_to_vacancy requires an access_token")
         data: dict[str, Any] = {"resume_id": resume_id, "vacancy_id": vacancy_id}

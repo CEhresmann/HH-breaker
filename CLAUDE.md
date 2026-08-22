@@ -102,30 +102,20 @@ To add filter: subclass `BaseFilter`, set `name` and `priority`, use `@FilterReg
 - `length_estimator.py` - Content length estimation for resume sizing
 
 ### Auto-Apply (hh.ru)
-`src/hr_breaker/autoapply/` - batch pipeline: search hh.ru vacancies by trigger keyword,
-tailor a resume + cover letter per new vacancy via the existing `optimize_for_job()`
-loop, optionally submit the application through hh.ru's API.
+`src/hr_breaker/autoapply/` - search hh.ru vacancies by trigger keyword, tailor a
+resume + cover letter per vacancy via `optimize_for_job()`, optionally apply.
 
-- `hh_client.py` - async hh.ru API client (search, OAuth, apply). `search_vacancies()`
-  is public/no-auth and its params are verified against hh.ru's OpenAPI spec
-  (`https://api.hh.ru/openapi/specification/public`). `apply_to_vacancy()`
-  (`POST /negotiations`) is **not** in that public spec - only community-documented.
-  Validate manually (one real vacancy, `--live`) before trusting it at scale.
-- `state_store.py` - SQLite dedup/audit log (`.cache/autoapply.sqlite3`) so re-running
-  skips vacancies already seen.
-- `pipeline.py` - `run_autoapply()`, the orchestration entry point. Builds `JobPosting`
-  directly from hh.ru's structured vacancy JSON (skips the `job_parser` LLM call).
+- `hh_client.py` - hh.ru API client (search, OAuth, apply). `apply_to_vacancy()`
+  (`POST /negotiations`) is not in hh.ru's public OpenAPI spec, community-documented
+  shape only.
+- `state_store.py` - SQLite dedup log (`.cache/autoapply.sqlite3`).
+- `pipeline.py` - `run_autoapply()` orchestration entry point.
 
-**Important caveat**: hh.ru's apply flow references one of *your existing resumes on
-hh.ru* by `resume_id` - there is no way to attach a different PDF per application
-through the API. So with `--live`, only the **cover letter** is actually personalized
-in the real application sent to hh.ru; the hr-breaker-tailored PDF is still generated
-and saved (useful for your own records, or to send manually if an employer asks for a
-resume by email outside hh.ru's flow) but is not attached to the automated application.
+hh.ru's apply flow references an existing resume by `resume_id`, not a per-application
+PDF. With `--live`, only the cover letter is part of the real application; the
+tailored PDF is saved locally but not attached.
 
-Safety: dry run by default (nothing sent to hh.ru without `--live`); `--max-apply` caps
-applications actually sent per run (real messages to real employers under your name -
-LinkedIn has no equivalent legitimate applicant-facing API, do not point this at it).
+Dry run by default. `--max-apply` caps applications sent per run.
 
 ### Commands
 ```bash
@@ -144,7 +134,7 @@ uv run hr-breaker optimize resume.txt job.txt --no-shame      # massively relax 
 uv run hr-breaker optimize resume.txt job.txt --instructions "Focus on Python, add K8s cert"  # user instructions
 uv run hr-breaker list                                        # list generated PDFs
 
-# Auto-apply (hh.ru) - see "Auto-Apply (hh.ru)" section above for the resume_id caveat
+# Auto-apply (hh.ru)
 uv run hr-breaker autoapply auth --client-id X --client-secret Y --redirect-uri Z  # one-time OAuth
 uv run hr-breaker autoapply run --profile my-profile -t python -t "data engineer"  # dry run
 uv run hr-breaker autoapply run --profile my-profile -t python --live --max-apply 5  # actually applies
