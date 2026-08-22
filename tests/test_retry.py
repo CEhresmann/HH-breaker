@@ -14,14 +14,15 @@ def test_settings_has_retry_fields():
     s = Settings()
     assert s.retry_max_attempts == 5
     assert s.retry_max_wait == 60.0
-    assert s.llm_max_concurrency == 8
 
 
 async def test_llm_max_concurrency_limits_simultaneous_calls(monkeypatch):
     monkeypatch.setattr(retry_module, "_semaphore", None)
     monkeypatch.setattr(
         retry_module, "get_settings",
-        lambda: MagicMock(llm_max_concurrency=1, retry_max_attempts=5, retry_max_wait=60.0),
+        lambda: MagicMock(
+            llm_max_concurrency=1, retry_max_attempts=5, retry_max_wait=60.0, llm_call_timeout=5.0,
+        ),
     )
 
     in_flight = 0
@@ -62,6 +63,11 @@ def test_is_retryable_400_not_retryable():
 
 def test_is_retryable_unrelated_exception():
     assert is_retryable(ValueError("nope")) is False
+
+
+def test_is_retryable_timeout():
+    assert is_retryable(TimeoutError("timed out")) is True
+    assert is_retryable(asyncio.TimeoutError()) is True
 
 
 def test_is_retryable_litellm_rate_limit():
@@ -110,6 +116,27 @@ async def test_run_with_retry_retries_litellm_rate_limit():
     result = await run_with_retry(func, "arg1")
     assert result == "ok"
     assert func.call_count == 2
+
+
+async def test_run_with_retry_times_out_and_retries_a_hanging_call(monkeypatch):
+    monkeypatch.setattr(
+        retry_module, "get_settings",
+        lambda: MagicMock(
+            llm_max_concurrency=8, retry_max_attempts=3, retry_max_wait=1.0, llm_call_timeout=0.05,
+        ),
+    )
+
+    calls = {"n": 0}
+
+    async def func():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            await asyncio.sleep(10)  # exceeds llm_call_timeout - should be cancelled, not awaited fully
+        return "ok"
+
+    result = await run_with_retry(func)
+    assert result == "ok"
+    assert calls["n"] == 2
 
 
 def test_is_retryable_false_for_litellm_none_type_config_error():

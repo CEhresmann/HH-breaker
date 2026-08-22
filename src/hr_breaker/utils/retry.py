@@ -42,7 +42,9 @@ def _is_non_retryable_litellm_config_error(exc: BaseException) -> bool:
 
 
 def is_retryable(exc: BaseException) -> bool:
-    """Check if exception is retryable (rate limit or transient server error)."""
+    """Check if exception is retryable (rate limit, transient server error, or timeout)."""
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return True
     if _is_non_retryable_litellm_config_error(exc):
         return False
     if isinstance(exc, ModelHTTPError):
@@ -72,6 +74,7 @@ async def run_with_retry(
     settings = get_settings()
     max_attempts = _max_attempts or settings.retry_max_attempts
     max_wait = _max_wait or settings.retry_max_wait
+    call_timeout = settings.llm_call_timeout
 
     @retry(
         retry=retry_if_exception(is_retryable),
@@ -82,6 +85,6 @@ async def run_with_retry(
     )
     async def _inner():
         async with _get_semaphore():
-            return await func(*args, **kwargs)
+            return await asyncio.wait_for(func(*args, **kwargs), timeout=call_timeout)
 
     return await _inner()
