@@ -112,6 +112,33 @@ async def test_already_seen_vacancies_are_skipped(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_bare_seen_vacancies_are_retried_not_skipped(tmp_path):
+    """A vacancy left at "seen" (e.g. a prior run was interrupted mid-tailoring) must
+    be retried, not treated as already handled."""
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    store.upsert("v1", "seen")
+    source = ResumeSource(content="Jane Doe\nPython developer")
+    optimized = OptimizedResume(html="<p>tailored</p>", source_checksum=source.checksum, pdf_bytes=b"%PDF-fake", pdf_text="tailored resume text")
+
+    with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls, \
+         patch("hr_breaker.autoapply.pipeline.optimize_for_job", new=AsyncMock(return_value=(optimized, ValidationResult(results=[]), None))), \
+         patch("hr_breaker.autoapply.pipeline.write_cover_letter", new=AsyncMock(return_value="Dear Acme...")), \
+         patch("hr_breaker.autoapply.pipeline.asyncio.sleep", new=AsyncMock()):
+        mock_hh = mock_hh_cls.return_value
+        mock_hh.search_vacancies = AsyncMock(return_value=[_make_vacancy("v1")])
+        mock_hh.get_vacancy_detail = AsyncMock(return_value=_make_vacancy("v1"))
+
+        summary = await run_autoapply(
+            triggers=["python"], resume_source=source, store=store,
+            output_dir=tmp_path / "pdfs", live=False,
+        )
+
+    assert summary.already_seen == 0
+    assert summary.tailored == 1
+    assert store.get("v1")["status"] == "ready"
+
+
+@pytest.mark.asyncio
 async def test_excluded_text_filters_by_title(tmp_path):
     store = AutoApplyStore(tmp_path / "state.sqlite3")
     source = ResumeSource(content="Jane Doe\nPython developer")

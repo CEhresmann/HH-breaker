@@ -133,7 +133,7 @@ async def run_autoapply(
         emit("searched", {"trigger": trigger, "found": len(vacancies)})
         for v in vacancies:
             summary.found += 1
-            if store.seen(v.id):
+            if store.is_resolved(v.id):
                 summary.already_seen += 1
                 continue
             if excluded_words and any(w in v.name.lower() for w in excluded_words):

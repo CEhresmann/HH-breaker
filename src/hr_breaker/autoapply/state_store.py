@@ -9,6 +9,10 @@ from typing import Any, Iterator
 
 DEFAULT_DB_PATH = Path(".cache/autoapply.sqlite3")
 
+# "seen" alone means a run recorded the vacancy but was interrupted before
+# finishing it (tailoring, applying) - it should be retried, not skipped.
+_RESOLVED_STATUSES = {"ready", "applied", "failed", "skipped"}
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS applications (
     vacancy_id TEXT PRIMARY KEY,
@@ -51,6 +55,16 @@ class AutoApplyStore:
                 "SELECT 1 FROM applications WHERE vacancy_id = ?", (vacancy_id,)
             ).fetchone()
         return row is not None
+
+    def is_resolved(self, vacancy_id: str) -> bool:
+        """True if this vacancy reached a terminal state - a bare "seen" row (recorded
+        but interrupted before tailoring/applying finished) is not resolved and should
+        be retried."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM applications WHERE vacancy_id = ?", (vacancy_id,)
+            ).fetchone()
+        return row is not None and row[0] in _RESOLVED_STATUSES
 
     def get(self, vacancy_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
