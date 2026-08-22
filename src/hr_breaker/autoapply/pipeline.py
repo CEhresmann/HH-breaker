@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 
 AUTOAPPLY_OUTPUT_DIR = Path("output/autoapply")
 
+# Safety cap on search pages fetched per trigger, independent of max_new -
+# a broad trigger can have thousands of hits.
+MAX_SEARCH_PAGES_PER_TRIGGER = 10
+
 
 @dataclass
 class AutoApplyRunSummary:
@@ -96,7 +100,7 @@ async def run_autoapply(
     docs_filter: str | None = None,
     area: str | None = None,
     excluded_text: str | None = None,
-    per_page: int = 20,
+    per_page: int = 100,
     max_new: int = 10,
     max_apply_per_run: int = 5,
     lang_mode: str = "from_job",
@@ -129,18 +133,24 @@ async def run_autoapply(
 
     candidates: list[tuple[str, Vacancy]] = []  # (trigger, vacancy)
     for trigger in triggers:
-        vacancies = await hh.search_vacancies(text=trigger, area=area, per_page=per_page)
-        emit("searched", {"trigger": trigger, "found": len(vacancies)})
-        for v in vacancies:
-            summary.found += 1
-            if store.is_resolved(v.id):
-                summary.already_seen += 1
-                continue
-            if excluded_words and any(w in v.name.lower() for w in excluded_words):
-                continue
-            candidates.append((trigger, v))
-            if len(candidates) >= max_new:
+        trigger_found = 0
+        for page in range(MAX_SEARCH_PAGES_PER_TRIGGER):
+            vacancies = await hh.search_vacancies(text=trigger, area=area, per_page=per_page, page=page)
+            trigger_found += len(vacancies)
+            for v in vacancies:
+                summary.found += 1
+                if store.is_resolved(v.id):
+                    summary.already_seen += 1
+                    continue
+                if excluded_words and any(w in v.name.lower() for w in excluded_words):
+                    continue
+                candidates.append((trigger, v))
+                if len(candidates) >= max_new:
+                    break
+            if len(candidates) >= max_new or len(vacancies) < per_page:
                 break
+            await asyncio.sleep(0.5)  # be a polite visitor to hh.ru's website between search pages
+        emit("searched", {"trigger": trigger, "found": trigger_found})
         if len(candidates) >= max_new:
             break
 

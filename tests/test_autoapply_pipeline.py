@@ -166,6 +166,34 @@ async def test_failed_vacancies_are_retried_not_skipped(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_search_paginates_until_max_new_or_short_page(tmp_path):
+    """A full page (== per_page) with no new candidates must trigger a second search
+    page; a short page (< per_page) must stop pagination."""
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    store.upsert("v1", "applied")
+    source = ResumeSource(content="Jane Doe\nPython developer")
+
+    with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls, \
+         patch("hr_breaker.autoapply.pipeline.optimize_for_job", new=AsyncMock()) as mock_optimize, \
+         patch("hr_breaker.autoapply.pipeline.asyncio.sleep", new=AsyncMock()):
+        mock_hh = mock_hh_cls.return_value
+        mock_hh.search_vacancies = AsyncMock(side_effect=[[_make_vacancy("v1")], []])
+
+        summary = await run_autoapply(
+            triggers=["python"], resume_source=source, store=store,
+            output_dir=tmp_path / "pdfs", live=False, per_page=1, max_new=5,
+        )
+
+    assert summary.found == 1
+    assert summary.already_seen == 1
+    assert mock_hh.search_vacancies.await_count == 2
+    first_call, second_call = mock_hh.search_vacancies.await_args_list
+    assert first_call.kwargs["page"] == 0
+    assert second_call.kwargs["page"] == 1
+    mock_optimize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_excluded_text_filters_by_title(tmp_path):
     store = AutoApplyStore(tmp_path / "state.sqlite3")
     source = ResumeSource(content="Jane Doe\nPython developer")
