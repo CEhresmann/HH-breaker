@@ -1,0 +1,266 @@
+"""Core optimization loop - used by both CLI and server."""
+
+import asyncio
+import time
+from collections.abc import Callable
+from contextlib import contextmanager
+
+from hr_breaker.agents import optimize_resume, parse_job_posting
+from hr_breaker.config import get_settings, logger
+from hr_breaker.models.language import Language
+from hr_breaker.filters import (
+    ContentLengthChecker,
+    LLMChecker,
+    DataValidator,
+    FilterRegistry,
+    HallucinationChecker,
+    KeywordMatcher,
+    VectorSimilarityMatcher,
+)
+from hr_breaker.models import (
+    FilterResult,
+    IterationContext,
+    JobPosting,
+    Language,
+    OptimizedResume,
+    ResumeSource,
+    ValidationResult,
+)
+from hr_breaker.services.pdf_parser import extract_text_from_pdf_bytes
+from hr_breaker.services.renderer import RenderError, HTMLRenderer
+
+# Ensure filters are registered
+_ = (
+    ContentLengthChecker,
+    DataValidator,
+    LLMChecker,
+    KeywordMatcher,
+    VectorSimilarityMatcher,
+    HallucinationChecker,
+)
+
+
+def _provider_for_model(model_name: str) -> str:
+    return model_name.split("/", 1)[0] if "/" in model_name else "unknown"
+
+
+def _optimization_settings_summary_lines(settings, *, max_iterations: int, parallel: bool, no_shame: bool) -> list[str]:
+    return [
+        f"Pro model: {settings.pro_model} / {_provider_for_model(settings.pro_model)}",
+        f"Flash model: {settings.flash_model} / {_provider_for_model(settings.flash_model)}",
+        f"Embedding model: {settings.embedding_model} / {_provider_for_model(settings.embedding_model)}",
+        f"Optimization mode: {'parallel' if parallel else 'sequential'}, reasoning: {settings.reasoning_effort}, max iterations: {max_iterations}, no-shame: {no_shame}",
+    ]
+
+def _optimizer_changes_log_message(changes: list[str]) -> str:
+    if not changes:
+        return "Optimizer changes: none"
+    return "Optimizer changes:\n" + "\n".join(f"- {change}" for change in changes)
+
+
+@contextmanager
+def log_time(operation: str):
+    start = time.perf_counter()
+    yield
+    elapsed = time.perf_counter() - start
+    logger.debug(f"{operation}: {elapsed:.2f}s")
+
+
+async def run_filters(
+    optimized: OptimizedResume,
+    job: JobPosting,
+    source: ResumeSource,
+    parallel: bool = False,
+    no_shame: bool = False,
+    language: Language | None = None,
+    source_language: Language | None = None,
+) -> ValidationResult:
+    """Run filters, either sequentially (early exit) or in parallel."""
+    filters = FilterRegistry.all()
+
+    if parallel:
+        # Run all filters concurrently
+        start = time.perf_counter()
+        filter_instances = [filter_cls(no_shame=no_shame) for filter_cls in filters]
+        tasks = [f.evaluate(optimized, job, source, language=language, source_language=source_language) for f in filter_instances]
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+        logger.debug(f"All filters (parallel): {time.perf_counter() - start:.2f}s")
+
+        # Convert exceptions to failed FilterResults
+        results = []
+        for f, result in zip(filter_instances, raw_results):
+            if isinstance(result, Exception):
+                logger.error(f"Filter {f.name} raised exception: {result}")
+                results.append(
+                    FilterResult(
+                        filter_name=f.name,
+                        passed=False,
+                        score=0.0,
+                        threshold=getattr(f, "threshold", 0.5),
+                        issues=[f"Filter error: {type(result).__name__}: {result}"],
+                        suggestions=["Check filter implementation"],
+                    )
+                )
+            else:
+                results.append(result)
+        return ValidationResult(results=results)
+
+    # Sequential mode: sorted by priority, early exit on failure
+    results = []
+    filters = sorted(filters, key=lambda f: f.priority)
+
+    for filter_cls in filters:
+        # Skip high-priority (last) filters if earlier ones failed
+        if (
+            filter_cls.priority >= 100
+            and results
+            and not all(r.passed for r in results)
+        ):
+            continue
+
+        f = filter_cls(no_shame=no_shame)
+        start = time.perf_counter()
+        result = await f.evaluate(optimized, job, source, language=language, source_language=source_language)
+        logger.debug(f"{filter_cls.name}: {time.perf_counter() - start:.2f}s")
+        results.append(result)
+
+        # Early exit on failure (unless it's a final check)
+        if not result.passed and filter_cls.priority < 100:
+            break
+
+    return ValidationResult(results=results)
+
+
+async def optimize_for_job(
+    source: ResumeSource,
+    job_text: str | None = None,
+    max_iterations: int | None = None,
+    on_iteration: Callable | None = None,
+    job: JobPosting | None = None,
+    parallel: bool = False,
+    no_shame: bool = False,
+    user_instructions: str | None = None,
+    language: Language | None = None,
+    source_language: Language | None = None,
+) -> tuple[OptimizedResume, ValidationResult, JobPosting]:
+    """
+    Core optimization loop.
+
+    Args:
+        source: Source resume
+        job_text: Job posting text (required if job not provided)
+        max_iterations: Max optimization iterations (default from settings)
+        on_iteration: Optional callback(iteration, optimized, validation)
+        job: Pre-parsed job posting (optional, skips parsing if provided)
+        parallel: Run filters in parallel
+        no_shame: Lenient mode
+        user_instructions: Optional user instructions for the optimizer
+        language: Target language for resume output
+        source_language: Source language of the original resume
+
+    Returns:
+        (optimized_resume, validation_result, job_posting)
+    """
+    settings = get_settings()
+
+    if max_iterations is None:
+        max_iterations = settings.max_iterations
+
+    for line in _optimization_settings_summary_lines(
+        settings,
+        max_iterations=max_iterations,
+        parallel=parallel,
+        no_shame=no_shame,
+    ):
+        logger.info(line)
+
+    renderer = HTMLRenderer()
+
+    if job is None:
+        if job_text is None:
+            raise ValueError("Either job_text or job must be provided")
+        with log_time("parse_job_posting"):
+            job = await parse_job_posting(job_text)
+    optimized = None
+    validation = None
+    last_attempt: str | None = None
+
+    if no_shame:
+        logger.info("No-shame mode enabled")
+
+    for i in range(max_iterations):
+        logger.info(f"Iteration {i + 1}/{max_iterations}")
+        ctx = IterationContext(
+            iteration=i,
+            original_resume=source.content,
+            last_attempt=last_attempt,
+            validation=validation,
+        )
+        with log_time("optimize_resume"):
+            optimized = await optimize_resume(source, job, ctx, no_shame=no_shame, user_instructions=user_instructions, language=language)
+        logger.info(_optimizer_changes_log_message(optimized.changes))
+        # Store last attempt for feedback (html or data depending on mode)
+        last_attempt = (
+            optimized.html
+            if optimized.html
+            else (optimized.data.model_dump_json() if optimized.data else None)
+        )
+
+        # Render PDF and extract text for filters (like real ATS)
+        optimized = _render_and_extract(optimized, renderer)
+
+        if optimized.pdf_text is None:
+            # PDF rendering failed - treat as validation failure
+            validation = ValidationResult(
+                results=[
+                    FilterResult(
+                        filter_name="PDFRender",
+                        passed=False,
+                        score=0.0,
+                        threshold=1.0,
+                        issues=["Failed to render resume to PDF"],
+                        suggestions=["Check resume data structure"],
+                    )
+                ]
+            )
+        else:
+            validation = await run_filters(
+                optimized, job, source, parallel=parallel, no_shame=no_shame,
+                language=language, source_language=source_language,
+            )
+
+        if on_iteration:
+            on_iteration(i, optimized, validation)
+
+        if validation.passed:
+            break
+
+    return optimized, validation, job
+
+
+def _render_and_extract(optimized: OptimizedResume, renderer) -> OptimizedResume:
+    """Render PDF and extract text, updating the OptimizedResume."""
+    try:
+        with log_time("render_pdf"):
+            # Use html if available, otherwise fall back to data (legacy)
+            if optimized.html is not None:
+                result = renderer.render(optimized.html)
+            elif optimized.data is not None:
+                result = renderer.render_data(optimized.data)
+            else:
+                raise RenderError("No content to render (neither html nor data)")
+
+        # Extract text from rendered PDF
+        with log_time("extract_text_from_pdf"):
+            pdf_text = extract_text_from_pdf_bytes(result.pdf_bytes)
+
+        return optimized.model_copy(
+            update={
+                "pdf_text": pdf_text,
+                "pdf_bytes": result.pdf_bytes,
+                "page_count": result.page_count,
+            }
+        )
+    except RenderError as e:
+        logger.error(f"Render error: {e}")
+        return optimized
