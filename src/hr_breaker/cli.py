@@ -1,12 +1,9 @@
 """CLI interface for HR-Breaker."""
 
 import asyncio
-import threading
-import webbrowser
 from pathlib import Path
 
 import click
-import uvicorn
 
 from hr_breaker.agents import extract_name, parse_job_posting
 from hr_breaker.config import get_settings
@@ -20,12 +17,7 @@ from hr_breaker.models import (
 )
 from hr_breaker.models.profile import document_needs_extraction, get_document_extraction
 from hr_breaker.orchestration import optimize_for_job
-from hr_breaker.services import (
-    PDFStorage,
-    scrape_job_posting,
-    ScrapingError,
-    CloudflareBlockedError,
-)
+from hr_breaker.services import PDFStorage
 from hr_breaker.services.pdf_storage import generate_run_id
 from hr_breaker.services.pdf_parser import load_resume_content
 
@@ -545,69 +537,21 @@ def list_history():
 
 
 # ---------------------------------------------------------------------------
-# serve command
-# ---------------------------------------------------------------------------
-
-@cli.command()
-@click.option("--port", "-p", type=int, default=8899, help="Port to serve on")
-@click.option("--open/--no-open", default=True, help="Auto-open browser")
-def serve(port: int, open: bool):
-    """Start the web UI server."""
-    url = f"http://localhost:{port}"
-    click.echo(f"Starting HR-Breaker at {url}")
-
-    if open:
-        threading.Timer(1.5, webbrowser.open, args=[url]).start()
-
-    uvicorn.run("hr_breaker.server:app", host="0.0.0.0", port=port, log_level="warning")
-
-
-# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 
 def _get_job_text(job_input: str) -> str:
-    """Get job text from URL or file path."""
+    """Get job text from a file path, or treat the input as raw text."""
     path = Path(job_input)
     if path.exists():
         return path.read_text(encoding="utf-8")
 
     if job_input.startswith(("http://", "https://")):
-        try:
-            return scrape_job_posting(job_input)
-        except CloudflareBlockedError:
-            click.echo("Site has bot protection. Opening in browser...")
-            click.launch(job_input)
-            click.echo("Please copy the job description and paste below.")
-            click.echo("(Press Enter twice when done)")
-            return _read_multiline_input()
-        except ScrapingError as e:
-            raise click.ClickException(str(e))
+        raise click.ClickException(
+            "URL scraping is not supported - paste the job description as text or a file instead."
+        )
 
     return job_input
-
-
-def _read_multiline_input() -> str:
-    """Read multiline input until double Enter."""
-    lines = []
-    empty_count = 0
-    while True:
-        try:
-            line = input()
-            if line == "":
-                empty_count += 1
-                if empty_count >= 2:
-                    break
-                lines.append(line)
-            else:
-                empty_count = 0
-                lines.append(line)
-        except EOFError:
-            break
-    text = "\n".join(lines).strip()
-    if not text:
-        raise click.ClickException("No job description provided")
-    return text
 
 
 if __name__ == "__main__":

@@ -15,23 +15,17 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "fastapi>=0.104",
-    "uvicorn[standard]>=0.24",
-    "python-multipart>=0.0.6",
     "pydantic>=2.0",
     "pydantic-ai",
     "pydantic-ai-litellm",
     "tenacity>=8.0",
     "httpx",
-    "beautifulsoup4",
     "scikit-learn>=1.0",
     "python-dotenv",
     "click>=8.0",
     "pymupdf>=1.24",
     "weasyprint>=60.0",
     "jinja2>=3.1",
-    "playwright>=1.40",
-    "watchdog>=6.0.0",
     "pydantic-settings>=2.12.0",
     "litellm<1.82.7"
 ]
