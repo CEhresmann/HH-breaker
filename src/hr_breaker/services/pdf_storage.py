@@ -15,8 +15,8 @@ def generate_run_id() -> str:
 
 
 def sanitize_filename(name: str) -> str:
-    """Convert name to safe filename component."""
-    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    """Convert name to safe filename component. Keeps Unicode letters (e.g. Cyrillic)."""
+    return re.sub(r"[^\w]+", "_", name.lower()).strip("_")
 
 
 class PDFStorage:

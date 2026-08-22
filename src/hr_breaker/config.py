@@ -142,6 +142,7 @@ class Settings(BaseSettings):
     # Retry settings
     retry_max_attempts: int = 5
     retry_max_wait: float = 60.0
+    llm_max_concurrency: int = 8
 
     def model_post_init(self, __context: Any) -> None:
         if self.gemini_api_key and "GEMINI_API_KEY" not in os.environ:

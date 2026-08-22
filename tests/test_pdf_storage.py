@@ -53,3 +53,14 @@ class TestListAllWithLanguageSuffix:
         r = records[0]
         assert r.first_name == "John"
         assert r.last_name == "Doe"
+
+
+class TestSanitizeFilename:
+    def test_ascii_name(self):
+        assert sanitize_filename("John Doe") == "john_doe"
+
+    def test_cyrillic_name_is_kept_not_stripped(self):
+        assert sanitize_filename("Тимофей Трубинов") == "тимофей_трубинов"
+
+    def test_empty_after_strip(self):
+        assert sanitize_filename("!!!") == ""
