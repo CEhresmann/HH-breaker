@@ -75,6 +75,7 @@ async def run_with_retry(
     max_attempts = _max_attempts or settings.retry_max_attempts
     max_wait = _max_wait or settings.retry_max_wait
     call_timeout = settings.llm_call_timeout
+    min_interval = settings.llm_min_call_interval
 
     @retry(
         retry=retry_if_exception(is_retryable),
@@ -85,6 +86,10 @@ async def run_with_retry(
     )
     async def _inner():
         async with _get_semaphore():
-            return await asyncio.wait_for(func(*args, **kwargs), timeout=call_timeout)
+            try:
+                return await asyncio.wait_for(func(*args, **kwargs), timeout=call_timeout)
+            finally:
+                if min_interval > 0:
+                    await asyncio.sleep(min_interval)
 
     return await _inner()
