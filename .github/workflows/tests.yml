@@ -2,9 +2,10 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    # No branches filter - this repo uses stacked PRs (e.g. feat/hh-autoapply targets
+    # import/hr-breaker-base, not master), all of them should get CI.
 
 jobs:
   test:
