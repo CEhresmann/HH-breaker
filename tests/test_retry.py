@@ -21,7 +21,8 @@ async def test_llm_max_concurrency_limits_simultaneous_calls(monkeypatch):
     monkeypatch.setattr(
         retry_module, "get_settings",
         lambda: MagicMock(
-            llm_max_concurrency=1, retry_max_attempts=5, retry_max_wait=60.0, llm_call_timeout=5.0,
+            llm_max_concurrency=1, retry_max_attempts=5, retry_max_wait=60.0,
+            llm_call_timeout=5.0, llm_min_call_interval=0.0,
         ),
     )
 
@@ -39,6 +40,28 @@ async def test_llm_max_concurrency_limits_simultaneous_calls(monkeypatch):
     results = await asyncio.gather(*[run_with_retry(func) for _ in range(5)])
     assert results == ["ok"] * 5
     assert max_in_flight == 1
+
+
+async def test_llm_min_call_interval_spaces_out_sequential_calls(monkeypatch):
+    monkeypatch.setattr(retry_module, "_semaphore", None)
+    monkeypatch.setattr(
+        retry_module, "get_settings",
+        lambda: MagicMock(
+            llm_max_concurrency=1, retry_max_attempts=5, retry_max_wait=60.0,
+            llm_call_timeout=5.0, llm_min_call_interval=0.1,
+        ),
+    )
+
+    call_times = []
+
+    async def func():
+        call_times.append(asyncio.get_event_loop().time())
+        return "ok"
+
+    await run_with_retry(func)
+    await run_with_retry(func)
+
+    assert call_times[1] - call_times[0] >= 0.1
 
 
 def test_is_retryable_429():
@@ -122,7 +145,8 @@ async def test_run_with_retry_times_out_and_retries_a_hanging_call(monkeypatch):
     monkeypatch.setattr(
         retry_module, "get_settings",
         lambda: MagicMock(
-            llm_max_concurrency=8, retry_max_attempts=3, retry_max_wait=1.0, llm_call_timeout=0.05,
+            llm_max_concurrency=8, retry_max_attempts=3, retry_max_wait=1.0,
+            llm_call_timeout=0.05, llm_min_call_interval=0.0,
         ),
     )
 
