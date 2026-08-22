@@ -9,6 +9,7 @@ from hr_breaker.agents.optimizer import get_optimizer_agent
 from hr_breaker.agents.combined_reviewer import get_combined_reviewer_agent
 from hr_breaker.agents.hallucination_detector import get_hallucination_agent
 from hr_breaker.agents.ai_generated_detector import get_ai_generated_agent
+from hr_breaker.agents.cover_letter import get_cover_letter_agent
 from hr_breaker.models import JobPosting, ResumeSource
 
 
@@ -39,3 +40,7 @@ def test_hallucination_agent_no_shame():
 
 def test_ai_generated_agent():
     assert get_ai_generated_agent() is not None
+
+
+def test_cover_letter_agent():
+    assert get_cover_letter_agent() is not None

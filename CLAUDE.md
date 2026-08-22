@@ -65,6 +65,7 @@ src/hr_breaker/
 - `hallucination_detector` - Detect fabricated content
 - `ai_generated_detector` - Detect AI-generated content indicators
 - `translation_checker` - Evaluate translation quality for non-English resumes
+- `cover_letter` - Generate a short cover letter for an already-optimized resume + job posting (used by the autoapply pipeline)
 
 ### Filter System
 Filters run by priority (lower first). Default: parallel execution. Use `--seq` for early exit on failure.
@@ -88,6 +89,22 @@ To add filter: subclass `BaseFilter`, set `name` and `priority`, use `@FilterReg
 - `pdf_storage.py` - Save/list generated PDFs
 - `length_estimator.py` - Content length estimation for resume sizing
 
+### Auto-Apply (hh.ru)
+`src/hr_breaker/autoapply/` - search hh.ru vacancies by trigger keyword, tailor a
+resume + cover letter per vacancy via `optimize_for_job()`, optionally apply.
+
+- `hh_client.py` - hh.ru API client (search, OAuth, apply). `apply_to_vacancy()`
+  (`POST /negotiations`) is not in hh.ru's public OpenAPI spec, community-documented
+  shape only.
+- `state_store.py` - SQLite dedup log (`.cache/autoapply.sqlite3`).
+- `pipeline.py` - `run_autoapply()` orchestration entry point.
+
+hh.ru's apply flow references an existing resume by `resume_id`, not a per-application
+PDF. With `--live`, only the cover letter is part of the real application; the
+tailored PDF is saved locally but not attached.
+
+Dry run by default. `--max-apply` caps applications sent per run.
+
 ### Commands
 ```bash
 # CLI
@@ -99,6 +116,11 @@ uv run hr-breaker optimize resume.txt job.txt --seq           # sequential filte
 uv run hr-breaker optimize resume.txt job.txt --no-shame      # massively relax lies/hallucination/AI checks (use with caution!)
 uv run hr-breaker optimize resume.txt job.txt --instructions "Focus on Python, add K8s cert"  # user instructions
 uv run hr-breaker list                                        # list generated PDFs
+
+# Auto-apply (hh.ru)
+uv run hr-breaker autoapply auth --client-id X --client-secret Y --redirect-uri Z  # one-time OAuth
+uv run hr-breaker autoapply run --profile my-profile -t python -t "data engineer"  # dry run
+uv run hr-breaker autoapply run --profile my-profile -t python --live --max-apply 5  # actually applies
 
 # Tests
 uv run pytest tests/
