@@ -137,9 +137,12 @@ class HHClient:
         """Search vacancies via the website's own search endpoint (see module docstring).
 
         Results are the compact search-listing shape - no description/key_skills.
-        Call `get_vacancy_detail()` per vacancy to fill those in.
+        Call `get_vacancy_detail()` per vacancy to fill those in. `per_page` above 100
+        is silently reset to 50 server-side, so it's clamped here to stay predictable.
         """
-        params: dict[str, Any] = {"text": text, "items_on_page": per_page, "page": page}
+        params: dict[str, Any] = {
+            "text": text, "items_on_page": min(per_page, 100), "page": page,
+        }
         if area:
             params["area"] = area
         if professional_role:

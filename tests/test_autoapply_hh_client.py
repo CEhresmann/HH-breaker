@@ -84,6 +84,17 @@ async def test_search_vacancies_parses_shard_and_drops_ads():
 
 
 @pytest.mark.asyncio
+async def test_search_vacancies_clamps_per_page_to_100():
+    fake_client = _FakeAsyncClient(_FakeResponse(200, {"vacancySearchResult": {"vacancies": []}}))
+    with patch("hr_breaker.autoapply.hh_client.httpx.AsyncClient", return_value=fake_client):
+        client = HHClient()
+        await client.search_vacancies("python", per_page=500)
+
+    _, _, params, _ = fake_client.calls[0]
+    assert params["items_on_page"] == 100
+
+
+@pytest.mark.asyncio
 async def test_search_vacancies_raises_on_error_status():
     fake_client = _FakeAsyncClient(_FakeResponse(403, {}, text="forbidden"))
     with patch("hr_breaker.autoapply.hh_client.httpx.AsyncClient", return_value=fake_client):

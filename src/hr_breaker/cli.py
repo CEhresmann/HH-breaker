@@ -621,6 +621,7 @@ def autoapply_resumes(access_token: str):
 @click.option("--resume", "resume_path", default=None, type=click.Path(exists=True, path_type=Path), help="Or: a raw resume file instead of a profile")
 @click.option("--area", default=None, help="hh.ru area/region id (see GET /areas) to restrict search to")
 @click.option("--exclude", "excluded_text", default=None, help="Comma-separated words - skip vacancies whose title contains any of them")
+@click.option("--per-page", default=100, show_default=True, help="Vacancies fetched per search page (hh.ru caps this at 100)")
 @click.option("--max-new", default=10, show_default=True, help="Max never-seen vacancies to tailor per run")
 @click.option("--lang", "lang_mode", default="from_job", help="from_job (default), from_resume, en, ru, ...")
 @click.option("--live", is_flag=True, help="Actually submit applications via hh.ru (DEFAULT IS DRY RUN)")
@@ -628,7 +629,7 @@ def autoapply_resumes(access_token: str):
 @click.option("--hh-resume-id", envvar="HH_RESUME_ID", default=None, help="Your hh.ru resume_id to apply with (required with --live)")
 @click.option("--access-token", envvar="HH_ACCESS_TOKEN", default=None, help="hh.ru access token (required with --live; see 'autoapply auth')")
 def autoapply_run(
-    triggers, profile_id, resume_path, area, excluded_text, max_new, lang_mode,
+    triggers, profile_id, resume_path, area, excluded_text, per_page, max_new, lang_mode,
     live, max_apply, hh_resume_id, access_token,
 ):
     """Search hh.ru for TRIGGERS, tailor a resume + cover letter for each new vacancy.
@@ -679,6 +680,7 @@ def autoapply_run(
             resume_source=resume_source,
             area=area,
             excluded_text=excluded_text,
+            per_page=per_page,
             max_new=max_new,
             max_apply_per_run=max_apply,
             lang_mode=lang_mode,
