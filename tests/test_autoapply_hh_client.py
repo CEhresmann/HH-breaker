@@ -47,39 +47,39 @@ class _FakeAsyncClient:
 
 
 @pytest.mark.asyncio
-async def test_search_vacancies_parses_items_and_sends_headers():
-    fake_items = {
-        "items": [
-            {
-                "id": "123",
-                "name": "Python Developer",
-                "employer": {"name": "Acme"},
-                "alternate_url": "https://hh.ru/vacancy/123",
-                "snippet": {"requirement": "Know <b>Python</b> well"},
-                "key_skills": [{"name": "Python"}, {"name": "SQL"}],
-                "area": {"name": "Moscow"},
-            }
-        ]
+async def test_search_vacancies_parses_shard_and_drops_ads():
+    fake_body = {
+        "vacancySearchResult": {
+            "vacancies": [
+                {"@isAdv": True, "vacancyId": 1, "name": "Sponsored slot"},
+                {
+                    "vacancyId": 123,
+                    "name": "Python Developer",
+                    "company": {"name": "Acme"},
+                    "area": {"name": "Moscow"},
+                },
+            ]
+        }
     }
-    fake_client = _FakeAsyncClient(_FakeResponse(200, fake_items))
+    fake_client = _FakeAsyncClient(_FakeResponse(200, fake_body))
     with patch("hr_breaker.autoapply.hh_client.httpx.AsyncClient", return_value=fake_client):
         client = HHClient()
         results = await client.search_vacancies("python", area="1")
 
-    assert len(results) == 1
+    assert len(results) == 1  # the @isAdv entry is dropped
     v = results[0]
     assert v.id == "123"
     assert v.name == "Python Developer"
     assert v.employer_name == "Acme"
-    assert v.key_skills == ["Python", "SQL"]
-    assert "Python well" in v.description  # HTML stripped
+    assert v.area_name == "Moscow"
+    assert v.url == "https://hh.ru/vacancy/123"
 
     method, url, params, headers = fake_client.calls[0]
     assert method == "GET"
-    assert url.endswith("/vacancies")
+    assert url.endswith("/shards/vacancy/search")
     assert params["text"] == "python"
     assert params["area"] == "1"
-    assert "User-Agent" in headers
+    assert headers["Accept"] == "application/json"
     assert "Authorization" not in headers  # search is public, no token set
 
 
@@ -90,6 +90,32 @@ async def test_search_vacancies_raises_on_error_status():
         client = HHClient()
         with pytest.raises(HHApiError):
             await client.search_vacancies("python")
+
+
+@pytest.mark.asyncio
+async def test_get_vacancy_detail_parses_embedded_state():
+    page_html = """<html><body>
+    <template style="display:none" id="HH-Lux-InitialState">{&#34;vacancyView&#34;:{&#34;vacancyId&#34;:456,&#34;name&#34;:&#34;Backend Engineer&#34;,&#34;company&#34;:{&#34;name&#34;:&#34;Acme&#34;},&#34;area&#34;:{&#34;name&#34;:&#34;Moscow&#34;},&#34;description&#34;:&#34;&lt;p&gt;Know Python&lt;/p&gt;&#34;,&#34;keySkills&#34;:{&#34;keySkill&#34;:[&#34;Python&#34;,&#34;SQL&#34;]}}}</template>
+    </body></html>"""
+    fake_client = _FakeAsyncClient(_FakeResponse(200, text=page_html))
+    with patch("hr_breaker.autoapply.hh_client.httpx.AsyncClient", return_value=fake_client):
+        client = HHClient()
+        v = await client.get_vacancy_detail("456")
+
+    assert v.id == "456"
+    assert v.name == "Backend Engineer"
+    assert v.employer_name == "Acme"
+    assert v.key_skills == ["Python", "SQL"]
+    assert "Know Python" in v.description
+
+
+@pytest.mark.asyncio
+async def test_get_vacancy_detail_raises_when_state_missing():
+    fake_client = _FakeAsyncClient(_FakeResponse(200, text="<html>no state here</html>"))
+    with patch("hr_breaker.autoapply.hh_client.httpx.AsyncClient", return_value=fake_client):
+        client = HHClient()
+        with pytest.raises(HHApiError):
+            await client.get_vacancy_detail("456")
 
 
 @pytest.mark.asyncio

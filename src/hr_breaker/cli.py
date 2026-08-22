@@ -601,7 +601,7 @@ def auth(client_id: str, client_secret: str, redirect_uri: str):
 @click.option("--profile", "profile_id", default=None, help="Profile ID to tailor from (see 'hr-breaker profile')")
 @click.option("--resume", "resume_path", default=None, type=click.Path(exists=True, path_type=Path), help="Or: a raw resume file instead of a profile")
 @click.option("--area", default=None, help="hh.ru area/region id (see GET /areas) to restrict search to")
-@click.option("--exclude", "excluded_text", default=None, help="hh.ru excluded_text - filter out vacancies containing these words")
+@click.option("--exclude", "excluded_text", default=None, help="Comma-separated words - skip vacancies whose title contains any of them")
 @click.option("--max-new", default=10, show_default=True, help="Max never-seen vacancies to tailor per run")
 @click.option("--lang", "lang_mode", default="from_job", help="from_job (default), from_resume, en, ru, ...")
 @click.option("--live", is_flag=True, help="Actually submit applications via hh.ru (DEFAULT IS DRY RUN)")

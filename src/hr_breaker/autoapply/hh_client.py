@@ -1,25 +1,48 @@
-"""Async client for the hh.ru (HeadHunter) API: vacancy search, OAuth, applying.
+"""Async client for hh.ru (HeadHunter): vacancy search, OAuth, applying.
 
 Docs: https://github.com/hhru/api, schema at https://api.hh.ru/openapi/redoc.
 
-`search_vacancies()` (`GET /vacancies`) is public, no auth required.
-`apply_to_vacancy()` (`POST /negotiations`) is not in the public OpenAPI schema -
-the resume_id/vacancy_id/message shape follows community usage. Validate against
-a real vacancy before relying on it at scale.
+Since April 2026 the public `GET api.hh.ru/vacancies` collection returns 403
+(behind DDoS-Guard) for unregistered apps - registration now requires a
+verified employer account. `search_vacancies()` and `get_vacancy_detail()`
+instead call the same internal endpoints the hh.ru website itself uses for
+anonymous visitors (`hh.ru/shards/vacancy/search`, the `HH-Lux-InitialState`
+JSON embedded in a vacancy's HTML page) - undocumented, subject to change
+without notice, distinct from the versioned public API.
+
+`apply_to_vacancy()` (`POST api.hh.ru/negotiations`) is unaffected - it was
+never anonymous, requires a registered app's OAuth token regardless, and is
+not in the public OpenAPI schema (community-documented shape).
 """
 
+import html as html_module
+import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 API_BASE = "https://api.hh.ru"
+WEB_BASE = "https://hh.ru"
 AUTHORIZE_URL = "https://hh.ru/oauth/authorize"
 TOKEN_URL = "https://hh.ru/oauth/token"
 REQUEST_TIMEOUT = 15.0
 
-# hh.ru asks integrators to identify their app in the User-Agent header.
+# hh.ru asks integrators to identify their app in the User-Agent header, for
+# the official api.hh.ru endpoints (OAuth, negotiations).
 DEFAULT_USER_AGENT = "hr-breaker-autoapply/0.1 (personal use)"
+
+# The website's own shard/HTML endpoints expect an ordinary browser UA, not
+# an app-identifying one.
+_WEB_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+_INITIAL_STATE_RE = re.compile(
+    r'<template style="display:none" id="HH-Lux-InitialState">(.*?)</template>', re.DOTALL
+)
 
 
 class HHApiError(Exception):
@@ -97,39 +120,53 @@ class HHClient:
             raise HHApiError(f"Token refresh failed ({resp.status_code}): {resp.text}")
         return resp.json()
 
+    def _web_headers(self, accept_json: bool = False) -> dict[str, str]:
+        headers = {"User-Agent": _WEB_USER_AGENT}
+        if accept_json:
+            headers["Accept"] = "application/json"
+        return headers
+
     async def search_vacancies(
         self,
         text: str,
         area: str | None = None,
-        excluded_text: str | None = None,
         per_page: int = 50,
         page: int = 0,
         professional_role: str | None = None,
     ) -> list[Vacancy]:
-        """Search vacancies by full-text query. Public endpoint - no auth needed."""
-        params: dict[str, Any] = {"text": text, "per_page": per_page, "page": page}
+        """Search vacancies via the website's own search endpoint (see module docstring).
+
+        Results are the compact search-listing shape - no description/key_skills.
+        Call `get_vacancy_detail()` per vacancy to fill those in.
+        """
+        params: dict[str, Any] = {"text": text, "items_on_page": per_page, "page": page}
         if area:
             params["area"] = area
-        if excluded_text:
-            params["excluded_text"] = excluded_text
         if professional_role:
             params["professional_role"] = professional_role
 
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            resp = await client.get(f"{API_BASE}/vacancies", params=params, headers=self._headers())
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
+            resp = await client.get(
+                f"{WEB_BASE}/shards/vacancy/search", params=params, headers=self._web_headers(accept_json=True)
+            )
         if resp.status_code >= 400:
             raise HHApiError(f"Vacancy search failed ({resp.status_code}): {resp.text}")
 
-        items = resp.json().get("items", [])
-        return [_parse_vacancy_summary(item) for item in items]
+        result = resp.json().get("vacancySearchResult", {})
+        items = result.get("vacancies", [])
+        return [_parse_shard_vacancy(item) for item in items if not item.get("@isAdv")]
 
     async def get_vacancy_detail(self, vacancy_id: str) -> Vacancy:
-        """Fetch full vacancy detail (search results only have a truncated snippet)."""
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            resp = await client.get(f"{API_BASE}/vacancies/{vacancy_id}", headers=self._headers())
+        """Fetch full vacancy detail (search results only have the compact shape)."""
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
+            resp = await client.get(f"{WEB_BASE}/vacancy/{vacancy_id}", headers=self._web_headers())
         if resp.status_code >= 400:
             raise HHApiError(f"Fetching vacancy {vacancy_id} failed ({resp.status_code}): {resp.text}")
-        return _parse_vacancy_summary(resp.json())
+        match = _INITIAL_STATE_RE.search(resp.text)
+        if not match:
+            raise HHApiError(f"Could not find HH-Lux-InitialState on vacancy {vacancy_id} page")
+        state = json.loads(html_module.unescape(match.group(1)))
+        return _parse_vacancy_view(state.get("vacancyView", {}))
 
     async def get_my_resumes(self) -> list[dict]:
         """List the authenticated user's own resumes (needed to get a resume_id to apply with)."""
@@ -161,18 +198,51 @@ def _strip_html(html: str) -> str:
     return extract_text_from_html(html) if html else ""
 
 
-def _parse_vacancy_summary(item: dict) -> Vacancy:
-    employer = item.get("employer") or {}
+def _extract_key_skills(raw_skills: Any) -> list[str]:
+    if not raw_skills:
+        return []
+    if isinstance(raw_skills, dict):
+        raw_skills = raw_skills.get("keySkill") or []
+    names = []
+    for s in raw_skills:
+        if isinstance(s, dict):
+            name = s.get("name") or s.get("@name")
+            if name:
+                names.append(name)
+        elif isinstance(s, str):
+            names.append(s)
+    return names
+
+
+def _parse_shard_vacancy(item: dict) -> Vacancy:
+    """Parse one entry from GET hh.ru/shards/vacancy/search - compact, no description."""
+    company = item.get("company") or {}
     area = item.get("area") or {}
-    key_skills = [s.get("name", "") for s in (item.get("key_skills") or []) if s.get("name")]
-    description = item.get("description") or item.get("snippet", {}).get("requirement", "") or ""
+    vacancy_id = str(item.get("vacancyId") or item.get("id") or "")
     return Vacancy(
-        id=str(item.get("id")),
+        id=vacancy_id,
         name=item.get("name", ""),
-        employer_name=employer.get("name", ""),
-        url=item.get("alternate_url", ""),
-        description=_strip_html(description),
-        key_skills=key_skills,
+        employer_name=company.get("name", ""),
+        url=f"{WEB_BASE}/vacancy/{vacancy_id}",
+        description="",
+        key_skills=[],
         area_name=area.get("name"),
         raw=item,
+    )
+
+
+def _parse_vacancy_view(view: dict) -> Vacancy:
+    """Parse the HH-Lux-InitialState.vacancyView object from a vacancy's HTML page."""
+    company = view.get("company") or {}
+    area = view.get("area") or {}
+    vacancy_id = str(view.get("vacancyId") or "")
+    return Vacancy(
+        id=vacancy_id,
+        name=view.get("name", ""),
+        employer_name=company.get("name", ""),
+        url=f"{WEB_BASE}/vacancy/{vacancy_id}",
+        description=_strip_html(view.get("description") or ""),
+        key_skills=_extract_key_skills(view.get("keySkills")),
+        area_name=area.get("name"),
+        raw=view,
     )

@@ -93,9 +93,11 @@ To add filter: subclass `BaseFilter`, set `name` and `priority`, use `@FilterReg
 `src/hr_breaker/autoapply/` - search hh.ru vacancies by trigger keyword, tailor a
 resume + cover letter per vacancy via `optimize_for_job()`, optionally apply.
 
-- `hh_client.py` - hh.ru API client (search, OAuth, apply). `apply_to_vacancy()`
-  (`POST /negotiations`) is not in hh.ru's public OpenAPI spec, community-documented
-  shape only.
+- `hh_client.py` - hh.ru client. `search_vacancies()`/`get_vacancy_detail()` use the
+  hh.ru website's own undocumented endpoints (`api.hh.ru/vacancies` returns 403 since
+  April 2026 for unregistered apps - see module docstring). `apply_to_vacancy()`
+  (`POST /negotiations`) still goes through the official API, community-documented
+  shape only (not in hh.ru's public OpenAPI spec).
 - `state_store.py` - SQLite dedup log (`.cache/autoapply.sqlite3`).
 - `pipeline.py` - `run_autoapply()` orchestration entry point.
 

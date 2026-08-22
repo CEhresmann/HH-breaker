@@ -21,6 +21,16 @@ for your own records, or to send manually if an employer asks for a resume by em
 outside of hh.ru's own flow) - it is just not attached to the automated application
 itself. See `src/hr_breaker/autoapply/pipeline.py`'s module docstring for detail.
 
+## Important caveat: vacancy search is not the official API
+
+Since April 2026 `api.hh.ru/vacancies` returns 403 for unregistered apps - the public
+collection now requires a verified employer account. `search_vacancies()` and
+`get_vacancy_detail()` instead call the same undocumented endpoints the hh.ru website
+uses for anonymous visitors. This works today but is not a stable, versioned contract -
+it can change without notice. Applying (`POST api.hh.ru/negotiations`) is unaffected -
+it always required a registered app + OAuth token. See
+`src/hr_breaker/autoapply/hh_client.py`'s module docstring for detail.
+
 ## Setup
 
 ```bash
