@@ -610,5 +610,128 @@ def _read_multiline_input() -> str:
     return text
 
 
+# ---------------------------------------------------------------------------
+# autoapply command group (hh.ru)
+# ---------------------------------------------------------------------------
+
+@cli.group()
+def autoapply():
+    """Search hh.ru vacancies by trigger keyword and auto-tailor resume + cover letter.
+
+    Two steps:
+
+        hr-breaker autoapply auth          # one-time: get an hh.ru access token
+        hr-breaker autoapply run ...       # search + tailor (+ apply with --live)
+    """
+
+
+@autoapply.command()
+@click.option("--client-id", required=True, envvar="HH_CLIENT_ID", help="hh.ru app client_id (from dev.hh.ru)")
+@click.option("--client-secret", required=True, envvar="HH_CLIENT_SECRET", help="hh.ru app client_secret")
+@click.option("--redirect-uri", required=True, envvar="HH_REDIRECT_URI", help="Must match the app's registered redirect URI")
+def auth(client_id: str, client_secret: str, redirect_uri: str):
+    """One-time OAuth flow: opens the consent URL, then exchanges the code you paste back
+    for an access_token/refresh_token. Requires an app registered at https://dev.hh.ru/.
+    """
+    from hr_breaker.autoapply.hh_client import HHClient, build_authorization_url
+
+    url = build_authorization_url(client_id, redirect_uri)
+    click.echo(f"1. Open this URL, log in, and approve access:\n\n   {url}\n")
+    click.echo("2. You'll be redirected to your redirect_uri with ?code=... in the URL.")
+    code = click.prompt("3. Paste the value of the 'code' query parameter here")
+
+    async def _exchange():
+        client = HHClient()
+        return await client.exchange_code_for_token(client_id, client_secret, code.strip(), redirect_uri)
+
+    token_data = asyncio.run(_exchange())
+    click.echo("\nSuccess. Add these to your .env (access tokens expire - keep the refresh_token too):\n")
+    click.echo(f"HH_ACCESS_TOKEN={token_data.get('access_token', '')}")
+    click.echo(f"HH_REFRESH_TOKEN={token_data.get('refresh_token', '')}")
+    if "expires_in" in token_data:
+        click.echo(f"# expires_in: {token_data['expires_in']}s")
+
+
+@autoapply.command("run")
+@click.option("--trigger", "-t", "triggers", multiple=True, required=True, help="Trigger keyword to search for (repeatable)")
+@click.option("--profile", "profile_id", default=None, help="Profile ID to tailor from (see 'hr-breaker profile')")
+@click.option("--resume", "resume_path", default=None, type=click.Path(exists=True, path_type=Path), help="Or: a raw resume file instead of a profile")
+@click.option("--area", default=None, help="hh.ru area/region id (see GET /areas) to restrict search to")
+@click.option("--exclude", "excluded_text", default=None, help="hh.ru excluded_text - filter out vacancies containing these words")
+@click.option("--max-new", default=10, show_default=True, help="Max never-seen vacancies to tailor per run")
+@click.option("--lang", "lang_mode", default="from_job", help="from_job (default), from_resume, en, ru, ...")
+@click.option("--live", is_flag=True, help="Actually submit applications via hh.ru (DEFAULT IS DRY RUN)")
+@click.option("--max-apply", default=5, show_default=True, help="Safety cap: max applications actually sent in this run")
+@click.option("--hh-resume-id", envvar="HH_RESUME_ID", default=None, help="Your hh.ru resume_id to apply with (required with --live)")
+@click.option("--access-token", envvar="HH_ACCESS_TOKEN", default=None, help="hh.ru access token (required with --live; see 'autoapply auth')")
+def autoapply_run(
+    triggers, profile_id, resume_path, area, excluded_text, max_new, lang_mode,
+    live, max_apply, hh_resume_id, access_token,
+):
+    """Search hh.ru for TRIGGERS, tailor a resume + cover letter for each new vacancy.
+
+    Without --live: dry run. Tailored PDFs + cover letters are saved under
+    output/autoapply/ and tracked in .cache/autoapply.sqlite3 so re-running skips
+    vacancies already seen. Nothing is sent to hh.ru.
+
+    With --live: also submits the application via hh.ru's negotiations endpoint, using
+    your existing hh.ru resume (--hh-resume-id) - the cover letter is personalized per
+    vacancy, but hh.ru's apply flow does not support attaching a different PDF per
+    application. See `hr_breaker.autoapply.pipeline` module docstring for detail.
+    """
+    from hr_breaker.autoapply import run_autoapply
+
+    if profile_id is None and resume_path is None:
+        raise click.UsageError("Provide either --profile <id> or --resume <path>")
+    if live and not (access_token and hh_resume_id):
+        raise click.UsageError("--live requires --access-token and --hh-resume-id (run 'hr-breaker autoapply auth' first)")
+
+    resume_source = None
+    if resume_path is not None:
+        resume_content = load_resume_content(resume_path)
+        first_name, last_name, lang_code = asyncio.run(extract_name(resume_content))
+        resume_source = ResumeSource(
+            content=resume_content, first_name=first_name, last_name=last_name, language_code=lang_code,
+        )
+
+    def on_event(event, data):
+        if event == "searched":
+            click.echo(f"[{data['trigger']}] found {data['found']} vacancies")
+        elif event == "tailored":
+            click.echo(f"  ready: {data['company']} - {data['title']} -> {data['pdf_path']}")
+        elif event == "applied":
+            click.echo(f"  APPLIED: {data['company']} - {data['title']}")
+        elif event == "failed":
+            click.echo(f"  failed: {data['company']} - {data['title']}: {data.get('error')}")
+        elif event == "skipped_apply_cap":
+            click.echo(f"  tailored but NOT applied (--max-apply cap reached): {data['company']} - {data['title']}")
+
+    if not live:
+        click.echo("DRY RUN (no applications will be sent - pass --live to actually apply)\n")
+
+    summary = asyncio.run(
+        run_autoapply(
+            triggers=list(triggers),
+            profile_id=profile_id,
+            resume_source=resume_source,
+            area=area,
+            excluded_text=excluded_text,
+            max_new=max_new,
+            max_apply_per_run=max_apply,
+            lang_mode=lang_mode,
+            live=live,
+            access_token=access_token,
+            hh_resume_id=hh_resume_id,
+            on_event=on_event,
+        )
+    )
+
+    click.echo(
+        f"\nDone. found={summary.found} already_seen={summary.already_seen} "
+        f"tailored={summary.tailored} failed={summary.failed} applied={summary.applied} "
+        f"skipped_apply_cap={summary.skipped_apply_cap}"
+    )
+
+
 if __name__ == "__main__":
     cli()
