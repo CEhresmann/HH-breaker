@@ -11,7 +11,9 @@ DEFAULT_DB_PATH = Path(".cache/autoapply.sqlite3")
 
 # "seen" alone means a run recorded the vacancy but was interrupted before
 # finishing it (tailoring, applying) - it should be retried, not skipped.
-_RESOLVED_STATUSES = {"ready", "applied", "failed", "skipped"}
+# "failed" is also retried - most failures seen in practice (timeouts, transient
+# rate limits) are not permanent.
+_RESOLVED_STATUSES = {"ready", "applied", "skipped"}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS applications (
