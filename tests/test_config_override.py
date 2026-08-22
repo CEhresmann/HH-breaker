@@ -95,6 +95,26 @@ class TestSettingsOverride:
         assert observed["value"] == "https://second.example.test/v1"
 
 
+def test_get_model_settings_disables_moonshot_thinking_by_default():
+    settings = config_module.get_model_settings("moonshot/kimi-k2.6")
+    assert settings["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_get_model_settings_leaves_other_providers_alone():
+    settings = config_module.get_model_settings("gemini/gemini-3-flash-preview")
+    assert settings is None or "extra_body" not in settings
+
+
+def test_get_model_settings_respects_moonshot_disable_thinking_false(monkeypatch):
+    monkeypatch.setenv("MOONSHOT_DISABLE_THINKING", "false")
+    config_module.get_settings.cache_clear()
+
+    settings = config_module.get_model_settings("moonshot/kimi-k2.6")
+
+    config_module.get_settings.cache_clear()
+    assert settings is None or "extra_body" not in settings
+
+
 def test_max_tokens_from_env(monkeypatch):
     monkeypatch.delenv("MAX_OUTPUT_TOKENS", raising=False)
     monkeypatch.setenv("MAX_TOKENS", "8192")

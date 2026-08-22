@@ -6,7 +6,7 @@ from datetime import date
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from hr_breaker.config import get_flash_model, get_model_settings
+from hr_breaker.config import get_flash_model, get_model_settings, get_settings
 from hr_breaker.models import FilterResult, JobPosting, OptimizedResume, ResumeSource
 from hr_breaker.models.language import Language
 from hr_breaker.utils.optimization_telemetry import run_tracked_agent
@@ -84,7 +84,7 @@ def get_translation_checker_agent(language: Language) -> Agent:
         get_flash_model(),
         output_type=TranslationQualityResult,
         system_prompt=prompt,
-        model_settings=get_model_settings(),
+        model_settings=get_model_settings(get_settings().flash_model),
     )
 
     @agent.system_prompt

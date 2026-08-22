@@ -4,7 +4,7 @@ from functools import lru_cache
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from hr_breaker.config import get_flash_model, get_model_settings
+from hr_breaker.config import get_flash_model, get_model_settings, get_settings
 from hr_breaker.models import FilterResult, OptimizedResume
 from hr_breaker.models.language import Language
 from hr_breaker.utils.optimization_telemetry import run_tracked_agent
@@ -77,7 +77,7 @@ def get_ai_generated_agent() -> Agent:
         get_flash_model(),
         output_type=AIGeneratedResult,
         system_prompt=SYSTEM_PROMPT,
-        model_settings=get_model_settings(),
+        model_settings=get_model_settings(get_settings().flash_model),
     )
 
     @agent.system_prompt

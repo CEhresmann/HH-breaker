@@ -31,7 +31,7 @@ async def extract_name(content: str) -> tuple[str | None, str | None, str]:
         get_flash_model(),
         output_type=ExtractedName,
         system_prompt=SYSTEM_PROMPT,
-        model_settings=get_model_settings(),
+        model_settings=get_model_settings(settings.flash_model),
     )
     # Only send first N chars - name should be at the top
     snippet = content[:settings.agent_name_extractor_chars]
