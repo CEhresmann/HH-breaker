@@ -52,3 +52,34 @@ def test_store_persists_across_instances(tmp_path):
 
     reopened = AutoApplyStore(db_path)
     assert reopened.seen("v1") is True
+
+
+def test_is_resolved_false_for_bare_seen(tmp_path):
+    """A vacancy interrupted before tailoring finished (still "seen") must be retried,
+    not permanently skipped."""
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    store.upsert("v1", "seen")
+
+    assert store.seen("v1") is True
+    assert store.is_resolved("v1") is False
+
+
+def test_is_resolved_true_for_terminal_statuses(tmp_path):
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    for status in ("ready", "applied", "skipped"):
+        store.upsert(f"v-{status}", status)
+        assert store.is_resolved(f"v-{status}") is True
+
+
+def test_is_resolved_false_for_failed(tmp_path):
+    """Most real-world failures (timeouts, transient rate limits) aren't permanent -
+    retry on the next run instead of skipping forever."""
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    store.upsert("v1", "failed", error="boom")
+
+    assert store.is_resolved("v1") is False
+
+
+def test_is_resolved_false_for_unknown_vacancy(tmp_path):
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    assert store.is_resolved("nope") is False

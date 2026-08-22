@@ -596,6 +596,25 @@ def auth(client_id: str, client_secret: str, redirect_uri: str):
         click.echo(f"# expires_in: {token_data['expires_in']}s")
 
 
+@autoapply.command("resumes")
+@click.option("--access-token", envvar="HH_ACCESS_TOKEN", required=True, help="hh.ru access token (see 'autoapply auth')")
+def autoapply_resumes(access_token: str):
+    """List your hh.ru resumes and their IDs - --hh-resume-id for 'autoapply run --live'
+    must be one of your own resumes already published on hh.ru (not created by this tool)."""
+    from hr_breaker.autoapply.hh_client import HHClient
+
+    async def _list():
+        client = HHClient(access_token=access_token)
+        return await client.get_my_resumes()
+
+    resumes = asyncio.run(_list())
+    if not resumes:
+        click.echo("No resumes found on your hh.ru account. Publish one at hh.ru first.")
+        return
+    for r in resumes:
+        click.echo(f"  {r.get('id')}  {r.get('title', '(untitled)')}")
+
+
 @autoapply.command("run")
 @click.option("--trigger", "-t", "triggers", multiple=True, required=True, help="Trigger keyword to search for (repeatable)")
 @click.option("--profile", "profile_id", default=None, help="Profile ID to tailor from (see 'hr-breaker profile')")

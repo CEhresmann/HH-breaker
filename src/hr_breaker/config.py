@@ -143,7 +143,7 @@ class Settings(BaseSettings):
     retry_max_attempts: int = 5
     retry_max_wait: float = 60.0
     llm_max_concurrency: int = 8
-    llm_call_timeout: float = 90.0
+    llm_call_timeout: float = 300.0
     llm_min_call_interval: float = 0.0
     moonshot_disable_thinking: bool = True
 

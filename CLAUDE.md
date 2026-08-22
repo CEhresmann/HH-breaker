@@ -169,7 +169,7 @@ Key model config vars (litellm format):
 - `RETRY_MAX_ATTEMPTS` - Max retry attempts for rate limits (default: `5`)
 - `RETRY_MAX_WAIT` - Max backoff wait in seconds (default: `60`)
 - `LLM_MAX_CONCURRENCY` - Process-wide cap on concurrent LLM calls (default: `8`) - lower for providers/tiers with a strict concurrency limit
-- `LLM_CALL_TIMEOUT` - Per-attempt timeout in seconds (default: `90`) - a hang counts as a retryable failure instead of blocking forever
+- `LLM_CALL_TIMEOUT` - Per-attempt timeout in seconds (default: `300`) - wraps a whole `agent.run()` call (can be several tool-calling round-trips, not one completion); a hang counts as a retryable failure instead of blocking forever
 - `LLM_MIN_CALL_INTERVAL` - Minimum seconds between calls (default: `0`) - raise if a provider's own concurrency slot release lags behind ours (back-to-back calls still get 429'd even at `LLM_MAX_CONCURRENCY=1`)
 - `MOONSHOT_DISABLE_THINKING` - Send `extra_body={"thinking": {"type": "disabled"}}` for `moonshot/` models (default: `true`) - moonshot/kimi models run extended reasoning by default; `get_model_settings(model_name)` needs the model name to scope this to moonshot only
 
