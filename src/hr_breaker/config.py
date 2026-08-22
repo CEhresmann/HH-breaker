@@ -106,19 +106,6 @@ class Settings(BaseSettings):
     output_dir: Path = Path("output")
     max_iterations: int = 5
     pass_threshold: float = 0.7
-    fast_mode: bool = Field(
-        default=True,
-        validation_alias=AliasChoices("fast_mode", "HR_BREAKER_FAST_MODE"),
-    )
-
-    # Scraper settings
-    scraper_httpx_timeout: float = 15.0
-    scraper_wayback_timeout: float = 10.0
-    scraper_playwright_timeout: int = 30000
-    scraper_httpx_max_retries: int = 3
-    scraper_wayback_max_age_days: int = 30
-    scraper_min_text_length: int = 200
-
     # Filter thresholds
     filter_hallucination_threshold: float = 0.9
     filter_keyword_threshold: float = 0.25

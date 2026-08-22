@@ -6,8 +6,8 @@ Tool for optimizing resumes for job postings and passing automated filters.
 
 ## How it works
 
-1. User uploads resume in ANY text format (LaTeX, plain text, markdown, HTML) - content source only
-2. User provides job posting URL or text description
+1. User provides resume in ANY text format (LaTeX, plain text, markdown, HTML) - content source only
+2. User provides job posting text (file or pasted)
 3. LLM extracts content from resume and generates NEW HTML resume that:
    - Maximally fits the job posting
    - Follows guidelines: one-page PDF, no misinformation, etc.
@@ -18,14 +18,10 @@ Tool for optimizing resumes for job postings and passing automated filters.
 
 ## Architecture
 
-1. FastAPI backend (async-native, serves static files + API)
-2. Alpine.js frontend (CDN-loaded, zero build steps, in `src/hr_breaker/static/`)
-3. SSE (Server-Sent Events) for real-time optimization progress
-4. Pydantic-AI LLM agent framework + pydantic-ai-litellm (any LLM provider)
-5. Default: Google Gemini models (configurable to OpenAI, Anthropic, etc. via litellm)
-6. Modular filter system - easy to add new checks
-7. Resume caching - input once, apply to many jobs
-8. Per-run settings overrides via UI (models, API keys, filter thresholds)
+1. CLI (Click)
+2. Pydantic-AI LLM agent framework + pydantic-ai-litellm (any LLM provider)
+3. Default: Google Gemini models (configurable to OpenAI, Anthropic, etc. via litellm)
+4. Modular filter system - easy to add new checks
 
 Python: 3.10–3.13
 Package manager: uv
@@ -53,16 +49,10 @@ src/hr_breaker/
 ├── models/          # Pydantic data models
 ├── agents/          # Pydantic-AI agents
 ├── filters/         # Plugin-based filter system
-├── services/        # Rendering, scraping, caching
-│   └── scrapers/    # Job scraper implementations
+├── services/        # Rendering, PDF parsing, storage
 ├── utils/           # Helpers (retry with backoff, HTML text extraction)
-├── static/          # Frontend (Alpine.js + CSS + JS, served by FastAPI)
-│   ├── index.html   # SPA: header + main area + settings drawer
-│   ├── js/app.js    # Alpine.js state, SSE client, settings overrides
-│   └── css/style.css
 ├── orchestration.py # Core optimization loop
-├── server.py        # FastAPI app (API endpoints + SSE streaming)
-├── cli.py           # Click CLI (optimize, list, serve)
+├── cli.py           # Click CLI (optimize, list)
 ├── config.py        # Settings (pydantic-settings BaseSettings, auto-reads env vars)
 └── litellm_patch.py # Monkey-patch for pydantic-ai-litellm vision support
 ```
@@ -95,9 +85,7 @@ To add filter: subclass `BaseFilter`, set `name` and `priority`, use `@FilterReg
 
 ### Services
 - `renderer.py` - HTMLRenderer (WeasyPrint)
-- `job_scraper.py` - Scrape job URLs (httpx → Wayback → Playwright fallback). 
 - `pdf_parser.py` - Extract text from PDF
-- `cache.py` - Resume + Job caching (file-based, mtime-ordered)
 - `pdf_storage.py` - Save/list generated PDFs
 - `length_estimator.py` - Content length estimation for resume sizing
 
@@ -119,15 +107,10 @@ Dry run by default. `--max-apply` caps applications sent per run.
 
 ### Commands
 ```bash
-# Web UI (FastAPI + Alpine.js, auto-opens browser)
-uv run hr-breaker serve                    # default: http://localhost:8899
-uv run hr-breaker serve -p 3000            # custom port
-uv run hr-breaker serve --no-open          # don't auto-open browser
-
 # CLI
-uv run hr-breaker optimize resume.txt https://example.com/job
-uv run hr-breaker optimize resume.txt https://example.com/job -l ru        # force Russian output
-uv run hr-breaker optimize resume.txt https://example.com/job -l from_job  # detect from job (default)
+uv run hr-breaker optimize resume.txt job.txt
+uv run hr-breaker optimize resume.txt job.txt -l ru        # force Russian output
+uv run hr-breaker optimize resume.txt job.txt -l from_job  # detect from job (default)
 uv run hr-breaker optimize resume.txt job.txt -D              # disable debug mode (on by default)
 uv run hr-breaker optimize resume.txt job.txt --seq           # sequential filters (early exit)
 uv run hr-breaker optimize resume.txt job.txt --no-shame      # massively relax lies/hallucination/AI checks (use with caution!)
@@ -162,22 +145,6 @@ This breaks `combined_reviewer` which sends a rendered resume PNG for visual qua
 Fix: `litellm_patch.py` monkey-patches `LiteLLMModel._map_messages` to properly convert `BinaryContent` images to `{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}`. Applied at startup via `config.py`. Remove when upstream fixes the bug.
 
 Repro: `uv run python scripts/repro_vision_bug.py` (without patch) vs `uv run python scripts/repro_vision_bug.py --patch` (with patch).
-
-### UI Architecture
-- Two-column layout: main area (left, max 900px) + sticky sidebar (right, 380px) with collapsible sections
-- Sidebar sections: Run Options, Models, API Keys, Filter Thresholds, History
-- **Profile-first resume UI**: profiles are the primary concept in the Resume card
-  - Profile list shown directly (no tabs). Clicking a profile auto-synthesizes it as resume
-  - Inline editor expands under profile item (edit icon) — shows docs, extraction badges, add note, re-extract
-  - Document selection: all docs selected by default. "Customize" checkbox reveals per-doc checkboxes (only for 2+ docs)
-  - `POST /api/profile/quick-create` — file or paste creates a profile + caches resume in one call
-  - Legacy cached resumes (non-profile `source_type`) shown in separate "Previous uploads" section below profiles
-  - Drop zone and paste toggle below profile list for quick profile creation
-- Per-run overrides: frontend sends model/key/threshold overrides with optimize request
-- Backend: `settings_override()` context manager temporarily sets env vars + clears `get_settings` cache for the duration of a run (safe since only one optimization runs at a time)
-- API keys: never persisted to localStorage, only sent per-request. Backend only returns boolean "is set" status, never actual values
-- Settings (models, thresholds, reasoning effort) prefilled from server defaults on load
-- Only settings, drawer state, and selected resume checksum persisted to localStorage (no job text, no API keys)
 
 ### Language Mode System
 - Language is a **mode**, not a fixed code: `from_job` (default), `from_resume`, `en`, `ru`
