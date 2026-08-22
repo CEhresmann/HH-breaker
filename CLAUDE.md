@@ -144,6 +144,7 @@ Key model config vars (litellm format):
 - `GEMINI_API_KEY` - API key for Gemini (also accepts `GOOGLE_API_KEY` for backward compat)
 - `RETRY_MAX_ATTEMPTS` - Max retry attempts for rate limits (default: `5`)
 - `RETRY_MAX_WAIT` - Max backoff wait in seconds (default: `60`)
+- `LLM_MAX_CONCURRENCY` - Process-wide cap on concurrent LLM calls (default: `8`) - lower for providers/tiers with a strict concurrency limit
 
 CLI options (settable via env vars, CLI flags override):
 - `HR_BREAKER_OUTPUT` - output path

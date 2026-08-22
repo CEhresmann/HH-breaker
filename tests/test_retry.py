@@ -1,10 +1,12 @@
-from unittest.mock import AsyncMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from litellm.exceptions import RateLimitError
 from pydantic_ai.exceptions import ModelHTTPError
 
 from hr_breaker.config import Settings
+from hr_breaker.utils import retry as retry_module
 from hr_breaker.utils.retry import is_retryable, run_with_retry
 
 
@@ -12,6 +14,30 @@ def test_settings_has_retry_fields():
     s = Settings()
     assert s.retry_max_attempts == 5
     assert s.retry_max_wait == 60.0
+    assert s.llm_max_concurrency == 8
+
+
+async def test_llm_max_concurrency_limits_simultaneous_calls(monkeypatch):
+    monkeypatch.setattr(retry_module, "_semaphore", None)
+    monkeypatch.setattr(
+        retry_module, "get_settings",
+        lambda: MagicMock(llm_max_concurrency=1, retry_max_attempts=5, retry_max_wait=60.0),
+    )
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def func():
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.02)
+        in_flight -= 1
+        return "ok"
+
+    results = await asyncio.gather(*[run_with_retry(func) for _ in range(5)])
+    assert results == ["ok"] * 5
+    assert max_in_flight == 1
 
 
 def test_is_retryable_429():

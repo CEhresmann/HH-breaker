@@ -1,5 +1,6 @@
 """Retry utilities for LLM API calls with exponential backoff."""
 
+import asyncio
 import logging
 
 from tenacity import (
@@ -17,6 +18,16 @@ from hr_breaker.config import get_settings
 logger = logging.getLogger(__name__)
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """Process-wide cap on concurrent LLM calls (some providers/tiers allow only 1)."""
+    global _semaphore
+    if _semaphore is None:
+        _semaphore = asyncio.Semaphore(get_settings().llm_max_concurrency)
+    return _semaphore
 
 
 def _is_non_retryable_litellm_config_error(exc: BaseException) -> bool:
@@ -70,6 +81,7 @@ async def run_with_retry(
         reraise=True,
     )
     async def _inner():
-        return await func(*args, **kwargs)
+        async with _get_semaphore():
+            return await func(*args, **kwargs)
 
     return await _inner()
