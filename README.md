@@ -26,7 +26,7 @@ itself. See `src/hr_breaker/autoapply/pipeline.py`'s module docstring for detail
 ```bash
 uv sync
 cp .env.example .env   # set GEMINI_API_KEY (or another LiteLLM-supported provider)
-uv run hr-breaker serve            # web UI, one resume <-> one job posting
+uv run hr-breaker optimize resume.txt job.txt   # one resume <-> one job posting
 ```
 
 For the auto-apply pipeline, you additionally need an hh.ru API application
