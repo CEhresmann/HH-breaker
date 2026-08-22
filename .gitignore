@@ -37,9 +37,6 @@ ENV/
 # Cache
 .cache/
 
-# Output PDFs
-output/
-
 # IDE
 .idea/
 .vscode/
