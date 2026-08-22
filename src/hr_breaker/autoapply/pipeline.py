@@ -125,16 +125,18 @@ async def run_autoapply(
 
     summary = AutoApplyRunSummary(searched_triggers=list(triggers), dry_run=not live)
 
+    excluded_words = [w.strip().lower() for w in (excluded_text or "").split(",") if w.strip()]
+
     candidates: list[tuple[str, Vacancy]] = []  # (trigger, vacancy)
     for trigger in triggers:
-        vacancies = await hh.search_vacancies(
-            text=trigger, area=area, excluded_text=excluded_text, per_page=per_page
-        )
+        vacancies = await hh.search_vacancies(text=trigger, area=area, per_page=per_page)
         emit("searched", {"trigger": trigger, "found": len(vacancies)})
         for v in vacancies:
             summary.found += 1
             if store.seen(v.id):
                 summary.already_seen += 1
+                continue
+            if excluded_words and any(w in v.name.lower() for w in excluded_words):
                 continue
             candidates.append((trigger, v))
             if len(candidates) >= max_new:
@@ -152,6 +154,8 @@ async def run_autoapply(
         emit("processing", outcome)
 
         try:
+            vacancy = await hh.get_vacancy_detail(vacancy.id)
+            await asyncio.sleep(0.5)  # be a polite visitor to hh.ru's website, not just the API
             job = _vacancy_to_job_posting(vacancy)
             source = await _resolve_source(
                 profile_id=profile_id, resume_source=resume_source, job=job, docs_filter=docs_filter

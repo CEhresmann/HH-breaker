@@ -28,9 +28,11 @@ async def test_dry_run_tailors_but_does_not_apply(tmp_path):
 
     with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls, \
          patch("hr_breaker.autoapply.pipeline.optimize_for_job", new=AsyncMock(return_value=(optimized, ValidationResult(results=[]), None))), \
-         patch("hr_breaker.autoapply.pipeline.write_cover_letter", new=AsyncMock(return_value="Dear Acme...")):
+         patch("hr_breaker.autoapply.pipeline.write_cover_letter", new=AsyncMock(return_value="Dear Acme...")), \
+         patch("hr_breaker.autoapply.pipeline.asyncio.sleep", new=AsyncMock()):
         mock_hh = mock_hh_cls.return_value
         mock_hh.search_vacancies = AsyncMock(return_value=[_make_vacancy("v1")])
+        mock_hh.get_vacancy_detail = AsyncMock(return_value=_make_vacancy("v1"))
         mock_hh.apply_to_vacancy = AsyncMock()
 
         summary = await run_autoapply(
@@ -61,9 +63,11 @@ async def test_live_run_applies_and_respects_max_apply_cap(tmp_path):
 
     with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls, \
          patch("hr_breaker.autoapply.pipeline.optimize_for_job", new=AsyncMock(return_value=(optimized, ValidationResult(results=[]), None))), \
-         patch("hr_breaker.autoapply.pipeline.write_cover_letter", new=AsyncMock(return_value="Dear Acme...")):
+         patch("hr_breaker.autoapply.pipeline.write_cover_letter", new=AsyncMock(return_value="Dear Acme...")), \
+         patch("hr_breaker.autoapply.pipeline.asyncio.sleep", new=AsyncMock()):
         mock_hh = mock_hh_cls.return_value
         mock_hh.search_vacancies = AsyncMock(return_value=[_make_vacancy("v1"), _make_vacancy("v2")])
+        mock_hh.get_vacancy_detail = AsyncMock(side_effect=lambda vid: _make_vacancy(vid))
         mock_hh.apply_to_vacancy = AsyncMock()
 
         summary = await run_autoapply(
@@ -104,4 +108,29 @@ async def test_already_seen_vacancies_are_skipped(tmp_path):
 
     assert summary.already_seen == 1
     assert summary.tailored == 0
+    mock_optimize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_excluded_text_filters_by_title(tmp_path):
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    source = ResumeSource(content="Jane Doe\nPython developer")
+    intern_vacancy = Vacancy(
+        id="v2", name="Python Intern", employer_name="Acme",
+        url="https://hh.ru/vacancy/v2", description="", key_skills=[], area_name=None, raw={},
+    )
+
+    with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls, \
+         patch("hr_breaker.autoapply.pipeline.optimize_for_job", new=AsyncMock()) as mock_optimize:
+        mock_hh = mock_hh_cls.return_value
+        mock_hh.search_vacancies = AsyncMock(return_value=[intern_vacancy])
+
+        summary = await run_autoapply(
+            triggers=["python"], resume_source=source, store=store,
+            output_dir=tmp_path / "pdfs", live=False, excluded_text="intern, junior",
+        )
+
+    assert summary.found == 1
+    assert summary.tailored == 0
+    assert store.seen("v2") is False  # filtered before ever being recorded
     mock_optimize.assert_not_awaited()
