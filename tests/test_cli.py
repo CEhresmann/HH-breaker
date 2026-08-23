@@ -28,6 +28,27 @@ def _fake_run_summary():
     return SimpleNamespace(found=0, already_seen=0, tailored=0, failed=0, applied=0, skipped_apply_cap=0)
 
 
+def test_autoapply_run_experience_passed_through(monkeypatch):
+    mock_run = AsyncMock(return_value=_fake_run_summary())
+    monkeypatch.setattr("hr_breaker.autoapply.run_autoapply", mock_run)
+
+    result = CliRunner().invoke(
+        cli, ["autoapply", "run", "-t", "python", "--profile", "some-id", "--experience", "between1And3"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert mock_run.call_args.kwargs["experience"] == "between1And3"
+
+
+def test_autoapply_run_experience_rejects_invalid_value():
+    result = CliRunner().invoke(
+        cli, ["autoapply", "run", "-t", "python", "--profile", "some-id", "--experience", "bogus"]
+    )
+
+    assert result.exit_code != 0
+    assert "bogus" in result.output
+
+
 def test_autoapply_run_max_iterations_defaults_to_two(monkeypatch):
     mock_run = AsyncMock(return_value=_fake_run_summary())
     monkeypatch.setattr("hr_breaker.autoapply.run_autoapply", mock_run)

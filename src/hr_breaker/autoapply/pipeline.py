@@ -105,6 +105,7 @@ async def run_autoapply(
     resume_source: ResumeSource | None = None,
     docs_filter: str | None = None,
     area: str | None = None,
+    experience: str | None = None,
     excluded_text: str | None = None,
     per_page: int = 100,
     max_new: int = 10,
@@ -144,7 +145,7 @@ async def run_autoapply(
     for trigger in triggers:
         trigger_found = 0
         for page in range(MAX_SEARCH_PAGES_PER_TRIGGER):
-            vacancies = await hh.search_vacancies(text=trigger, area=area, per_page=per_page, page=page)
+            vacancies = await hh.search_vacancies(text=trigger, area=area, experience=experience, per_page=per_page, page=page)
             trigger_found += len(vacancies)
             for v in vacancies:
                 summary.found += 1

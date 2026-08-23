@@ -84,6 +84,28 @@ async def test_search_vacancies_parses_shard_and_drops_ads():
 
 
 @pytest.mark.asyncio
+async def test_search_vacancies_passes_experience_param_when_set():
+    fake_client = _FakeAsyncClient(_FakeResponse(200, {"vacancySearchResult": {"vacancies": []}}))
+    with patch("hr_breaker.autoapply.hh_client.httpx.AsyncClient", return_value=fake_client):
+        client = HHClient()
+        await client.search_vacancies("python", experience="between1And3")
+
+    _, _, params, _ = fake_client.calls[0]
+    assert params["experience"] == "between1And3"
+
+
+@pytest.mark.asyncio
+async def test_search_vacancies_omits_experience_param_when_not_set():
+    fake_client = _FakeAsyncClient(_FakeResponse(200, {"vacancySearchResult": {"vacancies": []}}))
+    with patch("hr_breaker.autoapply.hh_client.httpx.AsyncClient", return_value=fake_client):
+        client = HHClient()
+        await client.search_vacancies("python")
+
+    _, _, params, _ = fake_client.calls[0]
+    assert "experience" not in params
+
+
+@pytest.mark.asyncio
 async def test_search_vacancies_clamps_per_page_to_100():
     fake_client = _FakeAsyncClient(_FakeResponse(200, {"vacancySearchResult": {"vacancies": []}}))
     with patch("hr_breaker.autoapply.hh_client.httpx.AsyncClient", return_value=fake_client):
