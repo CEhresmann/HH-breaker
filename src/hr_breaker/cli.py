@@ -564,8 +564,8 @@ def autoapply():
 
     Two steps:
 
-        hr-breaker autoapply auth          # one-time: get an hh.ru access token
-        hr-breaker autoapply run ...       # search + tailor (+ apply with --live)
+        hr-breaker autoapply browser-login   # one-time: log into hh.ru in a browser window
+        hr-breaker autoapply run ...          # search + tailor (+ apply with --live)
     """
 
 
@@ -599,8 +599,8 @@ def auth(client_id: str, client_secret: str, redirect_uri: str):
 @autoapply.command("resumes")
 @click.option("--access-token", envvar="HH_ACCESS_TOKEN", required=True, help="hh.ru access token (see 'autoapply auth')")
 def autoapply_resumes(access_token: str):
-    """List your hh.ru resumes and their IDs - --hh-resume-id for 'autoapply run --live'
-    must be one of your own resumes already published on hh.ru (not created by this tool)."""
+    """List your hh.ru resumes and their IDs (see hh_client module docstring - this
+    endpoint is currently 403-blocked regardless of token validity)."""
     from hr_breaker.autoapply.hh_client import HHClient
 
     async def _list():
@@ -615,6 +615,17 @@ def autoapply_resumes(access_token: str):
         click.echo(f"  {r.get('id')}  {r.get('title', '(untitled)')}")
 
 
+@autoapply.command("browser-login")
+@click.option("--profile-dir", type=click.Path(path_type=Path), default=None, help="Where to persist the browser session (default: .cache/hh_browser_profile)")
+def autoapply_browser_login(profile_dir: Path | None):
+    """One-time interactive login: opens a visible browser window on hh.ru. Log in by
+    hand, then close the window to save the session for 'autoapply run --live'."""
+    from hr_breaker.autoapply.browser_apply import PROFILE_DIR, login_interactively
+
+    asyncio.run(login_interactively(profile_dir or PROFILE_DIR))
+    click.echo("Session saved. Run 'hr-breaker autoapply run --live ...' to use it.")
+
+
 @autoapply.command("run")
 @click.option("--trigger", "-t", "triggers", multiple=True, required=True, help="Trigger keyword to search for (repeatable)")
 @click.option("--profile", "profile_id", default=None, help="Profile ID to tailor from (see 'hr-breaker profile')")
@@ -624,13 +635,14 @@ def autoapply_resumes(access_token: str):
 @click.option("--per-page", default=100, show_default=True, help="Vacancies fetched per search page (hh.ru caps this at 100)")
 @click.option("--max-new", default=10, show_default=True, help="Max never-seen vacancies to tailor per run")
 @click.option("--lang", "lang_mode", default="from_job", help="from_job (default), from_resume, en, ru, ...")
-@click.option("--live", is_flag=True, help="Actually submit applications via hh.ru (DEFAULT IS DRY RUN)")
+@click.option("--live", is_flag=True, help="Actually submit applications via a real browser session (DEFAULT IS DRY RUN)")
 @click.option("--max-apply", default=5, show_default=True, help="Safety cap: max applications actually sent in this run")
-@click.option("--hh-resume-id", envvar="HH_RESUME_ID", default=None, help="Your hh.ru resume_id to apply with (required with --live)")
-@click.option("--access-token", envvar="HH_ACCESS_TOKEN", default=None, help="hh.ru access token (required with --live; see 'autoapply auth')")
+@click.option("--resume-title", default=None, help="Substring of the resume title to pick, if your hh.ru account has more than one")
+@click.option("--headed", is_flag=True, help="Show the apply browser window instead of running headless (useful for the first --live run, or to solve a CAPTCHA)")
+@click.option("--browser-profile-dir", type=click.Path(path_type=Path), default=None, help="Browser session dir from 'autoapply browser-login' (default: .cache/hh_browser_profile)")
 def autoapply_run(
     triggers, profile_id, resume_path, area, excluded_text, per_page, max_new, lang_mode,
-    live, max_apply, hh_resume_id, access_token,
+    live, max_apply, resume_title, headed, browser_profile_dir,
 ):
     """Search hh.ru for TRIGGERS, tailor a resume + cover letter for each new vacancy.
 
@@ -638,17 +650,19 @@ def autoapply_run(
     output/autoapply/ and tracked in .cache/autoapply.sqlite3 so re-running skips
     vacancies already seen. Nothing is sent to hh.ru.
 
-    With --live: also submits the application via hh.ru's negotiations endpoint, using
-    your existing hh.ru resume (--hh-resume-id) - the cover letter is personalized per
-    vacancy, but hh.ru's apply flow does not support attaching a different PDF per
-    application. See `hr_breaker.autoapply.pipeline` module docstring for detail.
+    With --live: also submits the application through the browser session saved by
+    'autoapply browser-login' - the cover letter is personalized per vacancy, but
+    hh.ru's apply flow does not support attaching a different PDF per application.
+    See `hr_breaker.autoapply.browser_apply` module docstring for detail.
     """
     from hr_breaker.autoapply import run_autoapply
+    from hr_breaker.autoapply.browser_apply import PROFILE_DIR
 
     if profile_id is None and resume_path is None:
         raise click.UsageError("Provide either --profile <id> or --resume <path>")
-    if live and not (access_token and hh_resume_id):
-        raise click.UsageError("--live requires --access-token and --hh-resume-id (run 'hr-breaker autoapply auth' first)")
+    profile_dir = browser_profile_dir or PROFILE_DIR
+    if live and not profile_dir.exists():
+        raise click.UsageError(f"--live requires a browser session - run 'hr-breaker autoapply browser-login' first (expected at {profile_dir})")
 
     resume_source = None
     if resume_path is not None:
@@ -667,6 +681,8 @@ def autoapply_run(
             click.echo(f"  APPLIED: {data['company']} - {data['title']}")
         elif event == "failed":
             click.echo(f"  failed: {data['company']} - {data['title']}: {data.get('error')}")
+        elif event == "skipped":
+            click.echo(f"  skipped (not applied): {data['company']} - {data['title']}: {data.get('detail')}")
         elif event == "skipped_apply_cap":
             click.echo(f"  tailored but NOT applied (--max-apply cap reached): {data['company']} - {data['title']}")
 
@@ -685,8 +701,9 @@ def autoapply_run(
             max_apply_per_run=max_apply,
             lang_mode=lang_mode,
             live=live,
-            access_token=access_token,
-            hh_resume_id=hh_resume_id,
+            resume_title=resume_title,
+            browser_headless=not headed,
+            browser_profile_dir=profile_dir,
             on_event=on_event,
         )
     )
