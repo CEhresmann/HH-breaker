@@ -4,9 +4,11 @@ Page/Locator faked out - no real browser is launched."""
 import pytest
 
 from hr_breaker.autoapply.browser_apply import (
+    _ADD_LETTER_BUTTON_SELECTOR,
     _APPLY_LINK_SELECTOR,
     _DIALOG_SELECTOR,
     _LETTER_INPUT_SELECTOR,
+    _SUBMIT_BUTTON_SELECTOR,
     BrowserApplier,
     BrowserApplyError,
     CaptchaDetectedError,
@@ -197,6 +199,33 @@ async def test_apply_reveals_letter_field_hidden_behind_toggle(tmp_path):
     assert outcome.status == "applied"
     assert outcome.cover_letter_sent is True
     assert letter_locator.filled_value == "Dear hiring manager"
+
+
+@pytest.mark.asyncio
+async def test_apply_reveals_letter_field_via_confirmed_data_qa_toggle(tmp_path):
+    """The toggle is found by its exact data-qa (confirmed live 2026-08-23) before
+    ever falling back to the fuzzy text match."""
+    letter_locator = _FakeLocator(exists=False)
+    submit_locator = _FakeLocator(exists=True)
+
+    class _ToggleLocator(_FakeLocator):
+        async def click(self):
+            letter_locator.exists = True
+
+    dialog = _FakeLocator(exists=True, children={
+        ("locator", _ADD_LETTER_BUTTON_SELECTOR): _ToggleLocator(exists=True),
+        ("locator", _LETTER_INPUT_SELECTOR): letter_locator,
+        ("locator", _SUBMIT_BUTTON_SELECTOR): submit_locator,
+    })
+    applier = _make_applier(tmp_path)
+    page = _FakePage(apply_link=_FakeLocator(exists=True), dialog=dialog, success=True)
+
+    outcome = await applier._apply_on_page(page, "123", "Dear hiring manager", None)
+
+    assert outcome.status == "applied"
+    assert outcome.cover_letter_sent is True
+    assert letter_locator.filled_value == "Dear hiring manager"
+    assert submit_locator.clicked is True
 
 
 @pytest.mark.asyncio

@@ -98,7 +98,21 @@ async def _resolve_source(
     return synthesize_profile_resume_source(profile, selected, ranked)
 
 
-async def _apply_pending_ready(
+def _pending_apply_rows(store: AutoApplyStore) -> list[dict]:
+    """Rows tailored in an earlier run that still need the apply step: "ready"
+    (never applied), plus "failed" rows that already have a cover letter + PDF
+    from a stale attempt (e.g. the old API-based apply path, since replaced by
+    the browser flow) - re-discovering either via search would otherwise redo
+    the whole (expensive) tailoring pass just to retry the apply step."""
+    ready = store.list_by_status("ready")
+    stale_failed = [
+        row for row in store.list_by_status("failed")
+        if row.get("cover_letter") and row.get("pdf_path")
+    ]
+    return ready + stale_failed
+
+
+async def _retry_pending_applies(
     store: AutoApplyStore,
     browser_applier: BrowserApplier,
     summary: AutoApplyRunSummary,
@@ -106,12 +120,12 @@ async def _apply_pending_ready(
     max_apply_per_run: int,
     resume_title: str | None,
 ) -> None:
-    """Apply to vacancies already tailored in an earlier run ("ready": cover letter
-    + PDF exist, never applied) - no re-tailoring, just the apply step. Otherwise a
-    vacancy tailored during a dry run stays stuck at "ready" forever, since
-    `is_resolved()` treats it as already handled and a later --live run never
-    revisits it."""
-    for row in store.list_by_status("ready"):
+    """Apply to vacancies already tailored in an earlier run - no re-tailoring,
+    just the apply step. Otherwise a vacancy stays stuck forever: `is_resolved()`
+    treats "ready" as already handled, and a "failed" row with an existing cover
+    letter would only ever be revisited by re-discovering it via search and
+    redoing the entire tailoring pass for nothing."""
+    for row in _pending_apply_rows(store):
         if summary.applied >= max_apply_per_run:
             break
         vacancy_id = row["vacancy_id"]
@@ -210,7 +224,7 @@ async def run_autoapply(
     async with contextlib.AsyncExitStack() as stack:
         if browser_applier is not None:
             await stack.enter_async_context(browser_applier)
-            await _apply_pending_ready(store, browser_applier, summary, emit, max_apply_per_run, resume_title)
+            await _retry_pending_applies(store, browser_applier, summary, emit, max_apply_per_run, resume_title)
 
         for trigger, vacancy in candidates:
             outcome = {"vacancy_id": vacancy.id, "title": vacancy.name, "company": vacancy.employer_name}
