@@ -4,8 +4,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from hr_breaker.agents.cover_letter import CoverLetter, write_cover_letter
+from hr_breaker.agents.cover_letter import SYSTEM_PROMPT, CoverLetter, write_cover_letter
 from hr_breaker.models import JobPosting, OptimizedResume
+
+
+def test_system_prompt_forbids_subject_line_and_greeting():
+    """Regression test for a real observed defect: the model prefixed letters with
+    a subject-like line ("Отклик на вакансию") and a stray "ping" opener."""
+    assert "subject" in SYSTEM_PROMPT.lower()
+    assert "greeting" in SYSTEM_PROMPT.lower()
+    assert "ping" in SYSTEM_PROMPT.lower()  # explicitly called out as a forbidden example
 
 
 @pytest.mark.asyncio
