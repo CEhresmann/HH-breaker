@@ -7,8 +7,12 @@ same UI a logged-in human uses instead, via a persistent Playwright browser
 profile.
 
 Login is a one-time interactive step (`login_interactively()`): a visible
-browser opens, the user logs in by hand, and closing the window persists the
-session (cookies/local storage) to `PROFILE_DIR` for later headless runs.
+browser opens, the user logs in by hand, and pressing Enter in the terminal
+persists the session (cookies/local storage) to `PROFILE_DIR` for later
+headless runs. Closing the browser *window* alone is not enough to detect -
+on macOS in particular, the underlying browser process (and Playwright's
+connection to it) can keep running with zero windows open, so waiting for a
+"close" event never resolves.
 
 Selectors are based on hh.ru's markup as of 2026-08 (confirmed against a real
 vacancy page, plus community-documented selectors from
@@ -18,6 +22,7 @@ screenshot + the dialog's HTML to `debug_dir` and raises `BrowserApplyError`
 with the paths, instead of guessing.
 """
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -58,15 +63,16 @@ class ApplyOutcome:
 
 
 async def login_interactively(profile_dir: Path = PROFILE_DIR) -> None:
-    """Open a visible browser for the user to log into hh.ru by hand. Closing the
-    window persists the session to `profile_dir` for later headless runs."""
+    """Open a visible browser for the user to log into hh.ru by hand. Pressing
+    Enter in the terminal (not closing the window) persists the session to
+    `profile_dir` for later headless runs - see module docstring for why."""
     profile_dir.mkdir(parents=True, exist_ok=True)
     async with async_playwright() as pw:
         context = await pw.chromium.launch_persistent_context(str(profile_dir), headless=False)
         page = await context.new_page()
         await page.goto(f"{BASE_URL}/account/login?role=applicant")
-        logger.info("Log into hh.ru in the opened browser window, then close it to save the session.")
-        await context.wait_for_event("close", timeout=0)
+        await asyncio.to_thread(input, "Log into hh.ru in the opened browser window, then press Enter here to save the session... ")
+        await context.close()
 
 
 class BrowserApplier:

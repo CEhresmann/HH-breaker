@@ -619,7 +619,9 @@ def autoapply_resumes(access_token: str):
 @click.option("--profile-dir", type=click.Path(path_type=Path), default=None, help="Where to persist the browser session (default: .cache/hh_browser_profile)")
 def autoapply_browser_login(profile_dir: Path | None):
     """One-time interactive login: opens a visible browser window on hh.ru. Log in by
-    hand, then close the window to save the session for 'autoapply run --live'."""
+    hand, then press Enter in this terminal to save the session for 'autoapply run
+    --live' (closing the browser window alone does not save it - see browser_apply
+    module docstring)."""
     from hr_breaker.autoapply.browser_apply import PROFILE_DIR, login_interactively
 
     asyncio.run(login_interactively(profile_dir or PROFILE_DIR))
