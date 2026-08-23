@@ -1,13 +1,16 @@
 """Batch pipeline: search hh.ru vacancies by trigger keywords, tailor a resume + cover
-letter per new vacancy, optionally submit the application through hh.ru's API.
+letter per new vacancy, optionally submit the application through a real logged-in
+browser session (see browser_apply module docstring - hh.ru's official apply API is
+403-blocked regardless of token validity).
 
-hh.ru's apply flow references an existing resume by `resume_id`, not an arbitrary
-per-application PDF (see hh_client module docstring). With `live=True`, only the
-cover letter is sent as part of the real application; the tailored PDF is generated
-and saved locally but not attached to it.
+hh.ru's apply flow uses whichever resume is selected in the response dialog, not an
+arbitrary per-application PDF. With `live=True`, only the cover letter is sent as
+part of the real application; the tailored PDF is generated and saved locally but
+not attached to it.
 """
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,7 +22,8 @@ from hr_breaker.models.language import get_language_safe, resolve_target_languag
 from hr_breaker.orchestration import optimize_for_job
 from hr_breaker.services.pdf_storage import generate_run_id
 
-from .hh_client import HHApiError, HHClient, Vacancy
+from .browser_apply import PROFILE_DIR, BrowserApplier, BrowserApplyError
+from .hh_client import HHClient, Vacancy
 from .state_store import AutoApplyStore
 
 logger = logging.getLogger(__name__)
@@ -105,8 +109,9 @@ async def run_autoapply(
     max_apply_per_run: int = 5,
     lang_mode: str = "from_job",
     live: bool = False,
-    access_token: str | None = None,
-    hh_resume_id: str | None = None,
+    resume_title: str | None = None,
+    browser_headless: bool = True,
+    browser_profile_dir: Path = PROFILE_DIR,
     max_iterations: int | None = None,
     store: AutoApplyStore | None = None,
     output_dir: Path = AUTOAPPLY_OUTPUT_DIR,
@@ -115,13 +120,15 @@ async def run_autoapply(
     """Run one pass of the auto-apply pipeline.
 
     `live=False` (default): vacancies are found, deduped, resumes tailored, cover
-    letters written, PDFs saved - nothing is sent to hh.ru. `live=True` requires
-    `access_token` + `hh_resume_id` and submits applications, capped at
-    `max_apply_per_run` per call.
+    letters written, PDFs saved - nothing is sent to hh.ru. `live=True` submits
+    applications through a browser session at `browser_profile_dir` (see
+    `browser_apply.login_interactively` - requires a one-time interactive login),
+    capped at `max_apply_per_run` per call.
     """
     store = store or AutoApplyStore()
-    hh = HHClient(access_token=access_token)
+    hh = HHClient()
     output_dir.mkdir(parents=True, exist_ok=True)
+    browser_applier = BrowserApplier(profile_dir=browser_profile_dir, headless=browser_headless) if live else None
 
     def emit(event: str, data: dict) -> None:
         if on_event:
@@ -154,95 +161,96 @@ async def run_autoapply(
         if len(candidates) >= max_new:
             break
 
-    for trigger, vacancy in candidates:
-        outcome = {"vacancy_id": vacancy.id, "title": vacancy.name, "company": vacancy.employer_name}
-        store.upsert(
-            vacancy.id, "seen",
-            title=vacancy.name, company=vacancy.employer_name, url=vacancy.url,
-            trigger_keyword=trigger, raw=vacancy.raw,
-        )
-        emit("processing", outcome)
+    async with contextlib.AsyncExitStack() as stack:
+        if browser_applier is not None:
+            await stack.enter_async_context(browser_applier)
 
-        try:
-            vacancy = await hh.get_vacancy_detail(vacancy.id)
-            await asyncio.sleep(0.5)  # be a polite visitor to hh.ru's website, not just the API
-            job = _vacancy_to_job_posting(vacancy)
-            source = await _resolve_source(
-                profile_id=profile_id, resume_source=resume_source, job=job, docs_filter=docs_filter
-            )
-            target_language = resolve_target_language(lang_mode, job.language_code, source.language_code)
-            source_language = get_language_safe(source.language_code)
-
-            optimized, validation, job = await optimize_for_job(
-                source,
-                job=job,
-                max_iterations=max_iterations,
-                parallel=True,
-                language=target_language,
-                source_language=source_language,
-            )
-
-            if not optimized.pdf_bytes:
-                raise RuntimeError("PDF render failed")
-
-            run_id = generate_run_id()
-            pdf_path = output_dir / f"{run_id}_{vacancy.id}.pdf"
-            pdf_path.write_bytes(optimized.pdf_bytes)
-
-            cover_letter = await write_cover_letter(optimized, job, language=target_language)
-
+        for trigger, vacancy in candidates:
+            outcome = {"vacancy_id": vacancy.id, "title": vacancy.name, "company": vacancy.employer_name}
             store.upsert(
-                vacancy.id, "ready",
-                cover_letter=cover_letter, pdf_path=str(pdf_path),
+                vacancy.id, "seen",
+                title=vacancy.name, company=vacancy.employer_name, url=vacancy.url,
+                trigger_keyword=trigger, raw=vacancy.raw,
             )
-            summary.tailored += 1
-            outcome.update({
-                "status": "ready", "pdf_path": str(pdf_path), "cover_letter": cover_letter,
-                "filters_passed": validation.passed,
-            })
-            emit("tailored", outcome)
+            emit("processing", outcome)
 
-        except Exception as e:  # noqa: BLE001 - one failed vacancy must not kill the run
-            logger.exception(f"Failed to tailor vacancy {vacancy.id}: {e}")
-            store.upsert(vacancy.id, "failed", error=str(e))
-            summary.failed += 1
-            outcome.update({"status": "failed", "error": str(e)})
-            emit("failed", outcome)
+            try:
+                vacancy = await hh.get_vacancy_detail(vacancy.id)
+                await asyncio.sleep(0.5)  # be a polite visitor to hh.ru's website, not just the API
+                job = _vacancy_to_job_posting(vacancy)
+                source = await _resolve_source(
+                    profile_id=profile_id, resume_source=resume_source, job=job, docs_filter=docs_filter
+                )
+                target_language = resolve_target_language(lang_mode, job.language_code, source.language_code)
+                source_language = get_language_safe(source.language_code)
+
+                optimized, validation, job = await optimize_for_job(
+                    source,
+                    job=job,
+                    max_iterations=max_iterations,
+                    parallel=True,
+                    language=target_language,
+                    source_language=source_language,
+                )
+
+                if not optimized.pdf_bytes:
+                    raise RuntimeError("PDF render failed")
+
+                run_id = generate_run_id()
+                pdf_path = output_dir / f"{run_id}_{vacancy.id}.pdf"
+                pdf_path.write_bytes(optimized.pdf_bytes)
+
+                cover_letter = await write_cover_letter(optimized, job, language=target_language)
+
+                store.upsert(
+                    vacancy.id, "ready",
+                    cover_letter=cover_letter, pdf_path=str(pdf_path),
+                )
+                summary.tailored += 1
+                outcome.update({
+                    "status": "ready", "pdf_path": str(pdf_path), "cover_letter": cover_letter,
+                    "filters_passed": validation.passed,
+                })
+                emit("tailored", outcome)
+
+            except Exception as e:  # noqa: BLE001 - one failed vacancy must not kill the run
+                logger.exception(f"Failed to tailor vacancy {vacancy.id}: {e}")
+                store.upsert(vacancy.id, "failed", error=str(e))
+                summary.failed += 1
+                outcome.update({"status": "failed", "error": str(e)})
+                emit("failed", outcome)
+                summary.vacancies.append(outcome)
+                continue
+
+            if not live:
+                summary.vacancies.append(outcome)
+                continue
+
+            if summary.applied >= max_apply_per_run:
+                summary.skipped_apply_cap += 1
+                outcome["status"] = "skipped_apply_cap"
+                emit("skipped_apply_cap", outcome)
+                summary.vacancies.append(outcome)
+                continue
+
+            try:
+                apply_outcome = await browser_applier.apply(vacancy.id, cover_letter, resume_title=resume_title)
+                if apply_outcome.status == "applied":
+                    store.upsert(vacancy.id, "applied")
+                    summary.applied += 1
+                    outcome["status"] = "applied"
+                    emit("applied", outcome)
+                else:
+                    store.upsert(vacancy.id, "skipped", error=apply_outcome.detail)
+                    outcome.update({"status": "skipped", "detail": apply_outcome.detail})
+                    emit("skipped", outcome)
+            except BrowserApplyError as e:
+                logger.exception(f"Failed to apply to vacancy {vacancy.id}: {e}")
+                store.upsert(vacancy.id, "failed", error=str(e))
+                summary.failed += 1
+                outcome.update({"status": "failed", "error": str(e)})
+                emit("failed", outcome)
+
             summary.vacancies.append(outcome)
-            continue
-
-        if not live:
-            summary.vacancies.append(outcome)
-            continue
-
-        if summary.applied >= max_apply_per_run:
-            summary.skipped_apply_cap += 1
-            outcome["status"] = "skipped_apply_cap"
-            emit("skipped_apply_cap", outcome)
-            summary.vacancies.append(outcome)
-            continue
-
-        if not hh_resume_id:
-            outcome.update({"status": "failed", "error": "live=True but no hh_resume_id provided"})
-            store.upsert(vacancy.id, "failed", error=outcome["error"])
-            summary.failed += 1
-            emit("failed", outcome)
-            summary.vacancies.append(outcome)
-            continue
-
-        try:
-            await hh.apply_to_vacancy(hh_resume_id, vacancy.id, message=cover_letter)
-            store.upsert(vacancy.id, "applied")
-            summary.applied += 1
-            outcome["status"] = "applied"
-            emit("applied", outcome)
-        except HHApiError as e:
-            logger.exception(f"Failed to apply to vacancy {vacancy.id}: {e}")
-            store.upsert(vacancy.id, "failed", error=str(e))
-            summary.failed += 1
-            outcome.update({"status": "failed", "error": str(e)})
-            emit("failed", outcome)
-
-        summary.vacancies.append(outcome)
 
     return summary

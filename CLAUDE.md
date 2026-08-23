@@ -96,16 +96,22 @@ resume + cover letter per vacancy via `optimize_for_job()`, optionally apply.
 - `hh_client.py` - hh.ru client. `search_vacancies()`/`get_vacancy_detail()` use the
   hh.ru website's own undocumented endpoints (`api.hh.ru/vacancies` returns 403 since
   April 2026 for unregistered apps - see module docstring). `apply_to_vacancy()`
-  (`POST /negotiations`) still goes through the official API, community-documented
-  shape only (not in hh.ru's public OpenAPI spec).
+  (`POST /negotiations`) and `get_my_resumes()` are also 403-blocked regardless of
+  token validity (confirmed live) - kept for reference only, not used by the live path.
+- `browser_apply.py` - live apply path: submits through a real logged-in Playwright
+  browser session instead of the blocked API. `login_interactively()` does the
+  one-time interactive login; `BrowserApplier` reuses the saved session per run.
 - `state_store.py` - SQLite dedup log (`.cache/autoapply.sqlite3`).
 - `pipeline.py` - `run_autoapply()` orchestration entry point.
 
-hh.ru's apply flow references an existing resume by `resume_id`, not a per-application
-PDF. With `--live`, only the cover letter is part of the real application; the
-tailored PDF is saved locally but not attached.
+hh.ru's apply flow uses whichever resume is selected in the response dialog, not a
+per-application PDF. With `--live`, only the cover letter is part of the real
+application; the tailored PDF is saved locally but not attached.
 
-Dry run by default. `--max-apply` caps applications sent per run.
+Dry run by default. `--max-apply` caps applications sent per run. Selectors in
+`browser_apply.py` are based on hh.ru's markup as of 2026-08 and expected to need
+updates if hh.ru changes its DOM - on an unexpected page state, `apply()` saves a
+screenshot + HTML dump under `output/autoapply/browser_debug/` instead of guessing.
 
 ### Commands
 ```bash
@@ -120,7 +126,8 @@ uv run hr-breaker optimize resume.txt job.txt --instructions "Focus on Python, a
 uv run hr-breaker list                                        # list generated PDFs
 
 # Auto-apply (hh.ru)
-uv run hr-breaker autoapply auth --client-id X --client-secret Y --redirect-uri Z  # one-time OAuth
+playwright install chromium                                                        # one-time
+uv run hr-breaker autoapply browser-login                                          # one-time: log in
 uv run hr-breaker autoapply run --profile my-profile -t python -t "data engineer"  # dry run
 uv run hr-breaker autoapply run --profile my-profile -t python --live --max-apply 5  # actually applies
 

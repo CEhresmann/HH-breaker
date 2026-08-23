@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from hr_breaker.autoapply.browser_apply import ApplyOutcome
 from hr_breaker.autoapply.hh_client import Vacancy
 from hr_breaker.autoapply.pipeline import run_autoapply
 from hr_breaker.autoapply.state_store import AutoApplyStore
@@ -17,6 +18,22 @@ def _make_vacancy(vid="v1"):
         url=f"https://hh.ru/vacancy/{vid}", description="Build things",
         key_skills=["Python"], area_name="Moscow", raw={"id": vid},
     )
+
+
+class _FakeBrowserApplier:
+    """Stand-in async context manager for BrowserApplier - avoids launching Playwright."""
+
+    def __init__(self, apply_mock):
+        self._apply_mock = apply_mock
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def apply(self, vacancy_id, cover_letter, resume_title=None):
+        return await self._apply_mock(vacancy_id, cover_letter, resume_title=resume_title)
 
 
 @pytest.mark.asyncio
@@ -61,14 +78,16 @@ async def test_live_run_applies_and_respects_max_apply_cap(tmp_path):
     source = ResumeSource(content="Jane Doe\nPython developer")
     optimized = OptimizedResume(html="<p>tailored</p>", source_checksum=source.checksum, pdf_bytes=b"%PDF-fake", pdf_text="tailored resume text")
 
+    apply_mock = AsyncMock(return_value=ApplyOutcome("applied"))
+
     with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls, \
+         patch("hr_breaker.autoapply.pipeline.BrowserApplier", return_value=_FakeBrowserApplier(apply_mock)), \
          patch("hr_breaker.autoapply.pipeline.optimize_for_job", new=AsyncMock(return_value=(optimized, ValidationResult(results=[]), None))), \
          patch("hr_breaker.autoapply.pipeline.write_cover_letter", new=AsyncMock(return_value="Dear Acme...")), \
          patch("hr_breaker.autoapply.pipeline.asyncio.sleep", new=AsyncMock()):
         mock_hh = mock_hh_cls.return_value
         mock_hh.search_vacancies = AsyncMock(return_value=[_make_vacancy("v1"), _make_vacancy("v2")])
         mock_hh.get_vacancy_detail = AsyncMock(side_effect=lambda vid: _make_vacancy(vid))
-        mock_hh.apply_to_vacancy = AsyncMock()
 
         summary = await run_autoapply(
             triggers=["python"],
@@ -76,18 +95,70 @@ async def test_live_run_applies_and_respects_max_apply_cap(tmp_path):
             store=store,
             output_dir=tmp_path / "pdfs",
             live=True,
-            access_token="tok",
-            hh_resume_id="resume-1",
             max_apply_per_run=1,
         )
 
     assert summary.tailored == 2
     assert summary.applied == 1
     assert summary.skipped_apply_cap == 1
-    assert mock_hh.apply_to_vacancy.await_count == 1
+    assert apply_mock.await_count == 1
 
     statuses = {store.get("v1")["status"], store.get("v2")["status"]}
     assert statuses == {"applied", "ready"}
+
+
+@pytest.mark.asyncio
+async def test_live_run_marks_already_applied_as_skipped_not_failed(tmp_path):
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    source = ResumeSource(content="Jane Doe\nPython developer")
+    optimized = OptimizedResume(html="<p>tailored</p>", source_checksum=source.checksum, pdf_bytes=b"%PDF-fake", pdf_text="tailored resume text")
+    apply_mock = AsyncMock(return_value=ApplyOutcome("already_applied", "apply link not found"))
+
+    with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls, \
+         patch("hr_breaker.autoapply.pipeline.BrowserApplier", return_value=_FakeBrowserApplier(apply_mock)), \
+         patch("hr_breaker.autoapply.pipeline.optimize_for_job", new=AsyncMock(return_value=(optimized, ValidationResult(results=[]), None))), \
+         patch("hr_breaker.autoapply.pipeline.write_cover_letter", new=AsyncMock(return_value="Dear Acme...")), \
+         patch("hr_breaker.autoapply.pipeline.asyncio.sleep", new=AsyncMock()):
+        mock_hh = mock_hh_cls.return_value
+        mock_hh.search_vacancies = AsyncMock(return_value=[_make_vacancy("v1")])
+        mock_hh.get_vacancy_detail = AsyncMock(return_value=_make_vacancy("v1"))
+
+        summary = await run_autoapply(
+            triggers=["python"], resume_source=source, store=store,
+            output_dir=tmp_path / "pdfs", live=True,
+        )
+
+    assert summary.applied == 0
+    assert summary.failed == 0
+    assert store.get("v1")["status"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_live_run_records_browser_apply_error_as_failed(tmp_path):
+    from hr_breaker.autoapply.browser_apply import BrowserApplyError
+
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    source = ResumeSource(content="Jane Doe\nPython developer")
+    optimized = OptimizedResume(html="<p>tailored</p>", source_checksum=source.checksum, pdf_bytes=b"%PDF-fake", pdf_text="tailored resume text")
+    apply_mock = AsyncMock(side_effect=BrowserApplyError("no submit button found"))
+
+    with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls, \
+         patch("hr_breaker.autoapply.pipeline.BrowserApplier", return_value=_FakeBrowserApplier(apply_mock)), \
+         patch("hr_breaker.autoapply.pipeline.optimize_for_job", new=AsyncMock(return_value=(optimized, ValidationResult(results=[]), None))), \
+         patch("hr_breaker.autoapply.pipeline.write_cover_letter", new=AsyncMock(return_value="Dear Acme...")), \
+         patch("hr_breaker.autoapply.pipeline.asyncio.sleep", new=AsyncMock()):
+        mock_hh = mock_hh_cls.return_value
+        mock_hh.search_vacancies = AsyncMock(return_value=[_make_vacancy("v1")])
+        mock_hh.get_vacancy_detail = AsyncMock(return_value=_make_vacancy("v1"))
+
+        summary = await run_autoapply(
+            triggers=["python"], resume_source=source, store=store,
+            output_dir=tmp_path / "pdfs", live=True,
+        )
+
+    assert summary.applied == 0
+    assert summary.failed == 1
+    assert store.get("v1")["status"] == "failed"
 
 
 @pytest.mark.asyncio

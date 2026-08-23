@@ -10,9 +10,12 @@ anonymous visitors (`hh.ru/shards/vacancy/search`, the `HH-Lux-InitialState`
 JSON embedded in a vacancy's HTML page) - undocumented, subject to change
 without notice, distinct from the versioned public API.
 
-`apply_to_vacancy()` (`POST api.hh.ru/negotiations`) is unaffected - it was
-never anonymous, requires a registered app's OAuth token regardless, and is
-not in the public OpenAPI schema (community-documented shape).
+`apply_to_vacancy()` (`POST api.hh.ru/negotiations`) and `get_my_resumes()`
+(`GET api.hh.ru/resumes/mine`) are also 403-blocked, confirmed live with a
+fully valid, freshly-issued OAuth token - the block is not about token
+validity. Kept here for reference/in case hh.ru's policy changes again; the
+live apply path is `browser_apply.BrowserApplier`, which submits through a
+real logged-in browser session instead.
 """
 
 import html as html_module
