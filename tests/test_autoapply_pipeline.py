@@ -294,6 +294,61 @@ async def test_live_run_applies_to_previously_ready_vacancy_without_retailoring(
 
 
 @pytest.mark.asyncio
+async def test_live_run_retries_stale_failed_vacancy_with_existing_cover_letter(tmp_path):
+    """A "failed" row from a stale attempt that already produced a cover letter +
+    PDF (e.g. the old API-based apply path) must be retried for apply-only too,
+    not just "ready" rows - otherwise it's only ever revisited by re-discovering
+    it via search and redoing the whole tailoring pass for nothing."""
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    store.upsert(
+        "v1", "failed", title="Backend Engineer", company="Acme",
+        cover_letter="Dear Acme, already written.", pdf_path="/tmp/v1.pdf",
+        error="Apply to vacancy v1 failed (403): forbidden",
+    )
+    apply_mock = AsyncMock(return_value=ApplyOutcome("applied"))
+
+    with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls, \
+         patch("hr_breaker.autoapply.pipeline.BrowserApplier", return_value=_FakeBrowserApplier(apply_mock)), \
+         patch("hr_breaker.autoapply.pipeline.optimize_for_job", new=AsyncMock()) as mock_optimize:
+        mock_hh = mock_hh_cls.return_value
+        mock_hh.search_vacancies = AsyncMock(return_value=[])
+
+        summary = await run_autoapply(
+            triggers=["python"], resume_source=ResumeSource(content="Jane Doe"), store=store,
+            output_dir=tmp_path / "pdfs", live=True,
+        )
+
+    mock_optimize.assert_not_awaited()
+    apply_mock.assert_awaited_once_with("v1", "Dear Acme, already written.", resume_title=None)
+    assert summary.applied == 1
+    assert store.get("v1")["status"] == "applied"
+
+
+@pytest.mark.asyncio
+async def test_live_run_ignores_failed_vacancy_without_cover_letter(tmp_path):
+    """A "failed" row where tailoring itself failed (no cover letter/PDF) must NOT
+    be picked up by the apply-only retry - it needs full re-tailoring, which only
+    happens by re-discovering it via search."""
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    store.upsert("v1", "failed", error="litellm.InternalServerError")
+    apply_mock = AsyncMock()
+
+    with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls, \
+         patch("hr_breaker.autoapply.pipeline.BrowserApplier", return_value=_FakeBrowserApplier(apply_mock)):
+        mock_hh = mock_hh_cls.return_value
+        mock_hh.search_vacancies = AsyncMock(return_value=[])
+
+        summary = await run_autoapply(
+            triggers=["python"], resume_source=ResumeSource(content="Jane Doe"), store=store,
+            output_dir=tmp_path / "pdfs", live=True,
+        )
+
+    apply_mock.assert_not_awaited()
+    assert summary.applied == 0
+    assert store.get("v1")["status"] == "failed"
+
+
+@pytest.mark.asyncio
 async def test_live_run_keeps_ready_status_on_failed_apply_retry(tmp_path):
     """A retry of a previously-ready vacancy that fails to apply must stay "ready"
     (not "failed") so it's retried again next run without re-tailoring."""

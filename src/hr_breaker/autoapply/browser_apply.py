@@ -48,8 +48,14 @@ _APPLY_LINK_SELECTOR = '[data-qa="vacancy-response-link-top"]'
 _DIALOG_SELECTOR = '[role="dialog"]'
 _LETTER_INPUT_SELECTOR = '[data-qa="vacancy-response-popup-form-letter-input"]'
 _CLOSE_BUTTON_SELECTOR = '[data-qa="response-popup-close"]'
-_LETTER_TOGGLE_TEXT_RE = re.compile(r"сопроводительное письмо|написать письмо", re.IGNORECASE)
+# Confirmed live 2026-08-23 (debug dump): the letter textarea is hidden until this
+# button ("Добавить сопроводительное") is clicked - it does NOT match the "письмо"
+# text pattern that was tried first, which is why the toggle was never found.
+_ADD_LETTER_BUTTON_SELECTOR = '[data-qa="add-cover-letter"]'
+_LETTER_TOGGLE_TEXT_RE = re.compile(r"сопроводительное|написать письмо", re.IGNORECASE)
 _SUCCESS_TEXT_RE = re.compile(r"отклик отправлен", re.IGNORECASE)
+# Confirmed live 2026-08-23 (debug dump).
+_SUBMIT_BUTTON_SELECTOR = '[data-qa="vacancy-response-submit-popup"]'
 _SUBMIT_BUTTON_NAME_RE = re.compile(r"откликнут|отправ", re.IGNORECASE)
 _BLOCKED_TITLE_RE = re.compile(r"ddos-guard|checking your browser|подтвердите, что вы человек", re.IGNORECASE)
 
@@ -171,16 +177,18 @@ class BrowserApplier:
         return ApplyOutcome("applied", cover_letter_sent=letter_sent)
 
     async def _fill_letter_field(self, container, cover_letter: str) -> bool:
-        """Fill the cover-letter textarea if present, revealing it first if it's
-        hidden behind a toggle (e.g. "Написать сопроводительное письмо"). Returns
-        whether the letter was actually filled - the caller uses this to flag/log
-        an application that went out without one instead of treating it as a
+        """Fill the cover-letter textarea if present, revealing it first via the
+        "Добавить сопроводительное" toggle if it's hidden. Returns whether the
+        letter was actually filled - the caller uses this to flag/log an
+        application that went out without one instead of treating it as a
         silent full success."""
         if not cover_letter:
             return False
         letter_input = container.locator(_LETTER_INPUT_SELECTOR).first
         if await letter_input.count() == 0:
-            toggle = container.get_by_text(_LETTER_TOGGLE_TEXT_RE).first
+            toggle = container.locator(_ADD_LETTER_BUTTON_SELECTOR).first
+            if await toggle.count() == 0:
+                toggle = container.get_by_text(_LETTER_TOGGLE_TEXT_RE).first
             if await toggle.count() > 0:
                 await toggle.click()
                 letter_input = container.locator(_LETTER_INPUT_SELECTOR).first
@@ -190,7 +198,9 @@ class BrowserApplier:
         return True
 
     async def _click_submit(self, container, page: Page, vacancy_id: str) -> None:
-        submit_button = container.get_by_role("button", name=_SUBMIT_BUTTON_NAME_RE).first
+        submit_button = container.locator(_SUBMIT_BUTTON_SELECTOR).first
+        if await submit_button.count() == 0:
+            submit_button = container.get_by_role("button", name=_SUBMIT_BUTTON_NAME_RE).first
         if await submit_button.count() == 0:
             await self._dump_debug(page, vacancy_id, "no-submit-button")
             raise BrowserApplyError(
