@@ -90,3 +90,95 @@ class TestRunFiltersParallel:
             assert good_results[0].passed
 
 
+class TestRunFiltersParallelTiered:
+    @pytest.mark.asyncio
+    async def test_remote_tier_fires_when_local_tier_passes(
+        self, source_resume, job_posting, optimized_resume
+    ):
+        remote_calls = []
+
+        class LocalFilter:
+            name = "LocalFilter"
+            priority = 1
+            is_local = True
+
+            def __init__(self, **kwargs):
+                pass
+
+            async def evaluate(self, *args, **kwargs):
+                return FilterResult(filter_name="LocalFilter", passed=True, score=1.0, threshold=0.5)
+
+        class RemoteFilter:
+            name = "RemoteFilter"
+            priority = 5
+            is_local = False
+
+            def __init__(self, **kwargs):
+                pass
+
+            async def evaluate(self, *args, **kwargs):
+                remote_calls.append(1)
+                return FilterResult(filter_name="RemoteFilter", passed=True, score=1.0, threshold=0.5)
+
+        with patch("hr_breaker.orchestration.FilterRegistry.all") as mock_all:
+            mock_all.return_value = [LocalFilter, RemoteFilter]
+
+            validation = await run_filters(
+                optimized_resume, job_posting, source_resume, parallel=True
+            )
+
+        assert len(remote_calls) == 1
+        remote_results = [r for r in validation.results if r.filter_name == "RemoteFilter"]
+        assert len(remote_results) == 1
+        assert remote_results[0].skipped is False
+        assert remote_results[0].passed
+
+    @pytest.mark.asyncio
+    async def test_remote_tier_skipped_when_local_tier_fails(
+        self, source_resume, job_posting, optimized_resume
+    ):
+        remote_calls = []
+
+        class LocalFilter:
+            name = "LocalFilter"
+            priority = 1
+            is_local = True
+            threshold = 1.0
+
+            def __init__(self, **kwargs):
+                pass
+
+            async def evaluate(self, *args, **kwargs):
+                return FilterResult(filter_name="LocalFilter", passed=False, score=0.0, threshold=1.0)
+
+        class RemoteFilter:
+            name = "RemoteFilter"
+            priority = 5
+            is_local = False
+            threshold = 0.7
+
+            def __init__(self, **kwargs):
+                pass
+
+            async def evaluate(self, *args, **kwargs):
+                remote_calls.append(1)
+                return FilterResult(filter_name="RemoteFilter", passed=True, score=1.0, threshold=0.7)
+
+        with patch("hr_breaker.orchestration.FilterRegistry.all") as mock_all:
+            mock_all.return_value = [LocalFilter, RemoteFilter]
+
+            validation = await run_filters(
+                optimized_resume, job_posting, source_resume, parallel=True
+            )
+
+        assert len(remote_calls) == 0  # never invoked - skipped instead
+
+        remote_results = [r for r in validation.results if r.filter_name == "RemoteFilter"]
+        assert len(remote_results) == 1
+        assert remote_results[0].skipped is True
+        assert remote_results[0].threshold == 0.7
+
+        # The skipped remote filter reporting passed=True must not mask the local failure.
+        assert validation.passed is False
+
+

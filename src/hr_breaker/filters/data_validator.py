@@ -83,6 +83,7 @@ class DataValidator(BaseFilter):
     name = "DataValidator"
     priority = 1  # Run first
     threshold = 1.0  # Must pass fully
+    is_local = True
 
     async def evaluate(
         self,

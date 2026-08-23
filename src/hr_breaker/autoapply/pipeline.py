@@ -17,10 +17,12 @@ from pathlib import Path
 from typing import Callable
 
 from hr_breaker.agents import write_cover_letter
+from hr_breaker.config import get_settings
 from hr_breaker.models import JobPosting, ResumeSource
 from hr_breaker.models.language import get_language_safe, resolve_target_language
 from hr_breaker.orchestration import optimize_for_job
 from hr_breaker.services.pdf_storage import generate_run_id
+from hr_breaker.utils.optimization_telemetry import IterationETA
 
 from .browser_apply import PROFILE_DIR, BrowserApplier, BrowserApplyError
 from .hh_client import HHClient, Vacancy
@@ -184,10 +186,28 @@ async def run_autoapply(
                 target_language = resolve_target_language(lang_mode, job.language_code, source.language_code)
                 source_language = get_language_safe(source.language_code)
 
+                effective_max_iterations = max_iterations if max_iterations is not None else get_settings().max_iterations
+                eta_tracker = IterationETA(effective_max_iterations)
+
+                def on_iteration(i, iter_optimized, iter_validation):
+                    elapsed, eta = eta_tracker.tick(i)
+                    scores = ", ".join(
+                        f"{r.filter_name}:{r.score:.2f}/{r.threshold:.2f}"
+                        for r in iter_validation.results
+                        if not r.skipped
+                    )
+                    emit("iteration", {
+                        "vacancy_id": vacancy.id, "title": vacancy.name,
+                        "iteration": i + 1, "max_iterations": effective_max_iterations,
+                        "status": "PASS" if iter_validation.passed else "FAIL",
+                        "scores": scores, "elapsed": elapsed, "eta": eta,
+                    })
+
                 optimized, validation, job = await optimize_for_job(
                     source,
                     job=job,
                     max_iterations=max_iterations,
+                    on_iteration=on_iteration,
                     parallel=True,
                     language=target_language,
                     source_language=source_language,

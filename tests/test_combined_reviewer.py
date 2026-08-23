@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from hr_breaker.agents.combined_reviewer import (
     SCORE_WEIGHTS,
     CombinedReviewResult,
+    combined_review,
     compute_ats_score,
     pdf_to_image,
 )
@@ -239,6 +240,61 @@ class TestLLMChecker:
             result = await checker.evaluate(optimized_resume, job_posting, source_resume)
 
             assert any("Content overflow" in issue for issue in result.issues)
+
+
+class TestCombinedReviewRenderReuse:
+    """combined_review reuses an already-rendered PDF instead of re-rendering."""
+
+    def _mock_agent(self):
+        mock_agent = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.output = MagicMock(
+            looks_professional=True, visual_issues=[], visual_feedback="",
+            keyword_score=0.8, experience_score=0.8, education_score=0.8,
+            overall_fit_score=0.8, disqualified=False, ats_issues=[],
+        )
+        mock_agent.run.return_value = mock_result
+        return mock_agent
+
+    @pytest.mark.asyncio
+    async def test_reuses_prerendered_pdf_when_present(self, source_resume, job_posting):
+        optimized = OptimizedResume(
+            html='<header class="header"><h1 class="name">Test</h1></header>',
+            source_checksum=source_resume.checksum,
+            pdf_bytes=b"%PDF-fake", page_count=1,
+        )
+
+        with patch("hr_breaker.agents.combined_reviewer.get_combined_reviewer_agent") as mock_get, \
+             patch("hr_breaker.agents.combined_reviewer.get_renderer") as mock_renderer, \
+             patch("hr_breaker.agents.combined_reviewer.pdf_to_image") as mock_img:
+            mock_img.return_value = (b"png", 1)
+            mock_get.return_value = self._mock_agent()
+
+            await combined_review(optimized, job_posting)
+
+        mock_renderer.assert_not_called()
+        mock_img.assert_called_once_with(b"%PDF-fake")
+
+    @pytest.mark.asyncio
+    async def test_renders_when_page_count_missing(self, source_resume, job_posting):
+        optimized = OptimizedResume(
+            html='<header class="header"><h1 class="name">Test</h1></header>',
+            source_checksum=source_resume.checksum,
+            pdf_bytes=b"%PDF-fake", page_count=None,
+        )
+
+        with patch("hr_breaker.agents.combined_reviewer.get_combined_reviewer_agent") as mock_get, \
+             patch("hr_breaker.agents.combined_reviewer.get_renderer") as mock_renderer, \
+             patch("hr_breaker.agents.combined_reviewer.pdf_to_image") as mock_img:
+            mock_render_result = MagicMock(pdf_bytes=b"%PDF-rendered", warnings=[], page_count=1)
+            mock_renderer.return_value.render.return_value = mock_render_result
+            mock_img.return_value = (b"png", 1)
+            mock_get.return_value = self._mock_agent()
+
+            await combined_review(optimized, job_posting)
+
+        mock_renderer.return_value.render.assert_called_once_with(optimized.html)
+        mock_img.assert_called_once_with(b"%PDF-rendered")
 
 
 class TestPdfToImage:

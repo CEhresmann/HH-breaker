@@ -94,6 +94,7 @@ class KeywordMatcher(BaseFilter):
 
     name = "KeywordMatcher"
     priority = 4
+    is_local = True
 
     @property
     def threshold(self) -> float:

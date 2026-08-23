@@ -10,6 +10,7 @@ class BaseFilter(ABC):
     name: str = "BaseFilter"
     priority: int = 50  # Lower runs first, 100 = run last (after all others pass)
     threshold: float = 0.5  # Score threshold for passing
+    is_local: bool = False  # True = no network/LLM call, safe to run before gating expensive filters
 
     def __init__(self, no_shame: bool = False):
         self.no_shame = no_shame

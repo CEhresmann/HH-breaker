@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
@@ -7,6 +8,28 @@ from datetime import datetime
 from typing import Any, Callable
 
 from hr_breaker.utils.retry import run_with_retry
+
+
+class IterationETA:
+    """Tracks per-iteration wall-clock time and estimates time remaining."""
+
+    def __init__(self, max_iterations: int):
+        self.max_iterations = max_iterations
+        self.durations: list[float] = []
+        self._last = time.monotonic()
+
+    def tick(self, iteration_index: int) -> tuple[float, float]:
+        """Call once an iteration (0-based `iteration_index`) has finished.
+
+        Returns (elapsed_this_iteration, eta_seconds_for_remaining_iterations).
+        """
+        now = time.monotonic()
+        elapsed = now - self._last
+        self._last = now
+        self.durations.append(elapsed)
+        avg = sum(self.durations) / len(self.durations)
+        remaining = max(self.max_iterations - (iteration_index + 1), 0)
+        return elapsed, avg * remaining
 
 
 TelemetryReporter = Callable[[dict[str, Any]], None]
@@ -70,6 +93,7 @@ def _usage_payload(component: str, model_name: str, usage: Any) -> dict[str, Any
     requests = _usage_value(usage, "requests") or (1 if any((input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)) else 0)
     usage_available = any((input_tokens, output_tokens, cache_read_tokens, cache_write_tokens))
     return {
+        "event": "done",
         "timestamp": datetime.now().strftime("%H:%M:%S.%f")[:-3],
         "component": component,
         "model": model_name,
@@ -92,10 +116,26 @@ def report_usage(component: str, model_name: str, usage: Any) -> None:
     reporter(_usage_payload(component, model_name, usage))
 
 
+def report_call_start(component: str, model_name: str) -> None:
+    """Report that an LLM call is about to start - lets a UI show live progress
+    (elapsed time, "still working") in addition to the post-hoc usage report."""
+    reporter = _reporter.get()
+    if reporter is None:
+        return
+    reporter({
+        "event": "start",
+        "timestamp": datetime.now().strftime("%H:%M:%S.%f")[:-3],
+        "component": component,
+        "model": model_name,
+        "provider": provider_for_model(model_name),
+    })
+
+
 async def run_tracked_agent(agent: Any, *args, component: str, **kwargs):
-    result = await run_with_retry(agent.run, *args, **kwargs)
     model = getattr(agent, "model", None)
     model_name = getattr(model, "model_name", "unknown")
+    report_call_start(component, model_name)
+    result = await run_with_retry(agent.run, *args, **kwargs)
     usage_method = getattr(result, "usage", None)
     usage = usage_method() if callable(usage_method) else usage_method
     report_usage(component, model_name, usage)
