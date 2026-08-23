@@ -120,6 +120,15 @@ Dry run by default. `--max-apply` caps applications sent per run. Selectors in
 `browser_apply.py` are based on hh.ru's markup as of 2026-08 and expected to need
 updates if hh.ru changes its DOM - on an unexpected page state, `apply()` saves a
 screenshot + HTML dump under `output/autoapply/browser_debug/` instead of guessing.
+`ApplyOutcome.cover_letter_sent` is False (and a debug dump is saved) when an
+application went through without the letter field ever being found - surfaced as a
+warning by the CLI and stored as an error note, rather than silently looking identical
+to a normal success.
+
+`--live` also retries any vacancy already at `ready` (tailored, cover letter written,
+never applied - e.g. from an earlier dry run) before searching for new ones, reusing
+its saved cover letter instead of re-tailoring. A failed apply retry stays `ready`
+(not `failed`) so it's retried again next run without redoing the optimizer pass.
 
 `--max-iterations` (default `2`, vs. `optimize`'s general default of `5`) caps
 optimizer iterations per vacancy - lower is faster, at the risk of a less-tuned

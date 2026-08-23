@@ -764,7 +764,8 @@ def autoapply_run(
         elif event == "tailored":
             click.echo(f"  ready: {data['company']} - {data['title']} -> {data['pdf_path']}")
         elif event == "applied":
-            click.echo(f"  APPLIED: {data['company']} - {data['title']}")
+            warning = "" if data.get("cover_letter_sent", True) else " (WARNING: no cover letter attached - see browser_debug/)"
+            click.echo(f"  APPLIED: {data['company']} - {data['title']}{warning}")
         elif event == "failed":
             click.echo(f"  failed: {data['company']} - {data['title']}: {data.get('error')}")
         elif event == "iteration":
