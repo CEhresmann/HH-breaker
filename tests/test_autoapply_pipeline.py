@@ -265,6 +265,80 @@ async def test_search_paginates_until_max_new_or_short_page(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_live_run_applies_to_previously_ready_vacancy_without_retailoring(tmp_path):
+    """A vacancy tailored during an earlier dry run ("ready": cover letter + PDF
+    already exist, never applied) must be picked up by a later --live run and
+    applied using the saved cover letter - without re-running optimize_for_job."""
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    store.upsert(
+        "v1", "ready", title="Python Developer", company="Acme",
+        cover_letter="Dear Acme, already written.", pdf_path="/tmp/v1.pdf",
+    )
+    apply_mock = AsyncMock(return_value=ApplyOutcome("applied"))
+
+    with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls, \
+         patch("hr_breaker.autoapply.pipeline.BrowserApplier", return_value=_FakeBrowserApplier(apply_mock)), \
+         patch("hr_breaker.autoapply.pipeline.optimize_for_job", new=AsyncMock()) as mock_optimize:
+        mock_hh = mock_hh_cls.return_value
+        mock_hh.search_vacancies = AsyncMock(return_value=[])
+
+        summary = await run_autoapply(
+            triggers=["python"], resume_source=ResumeSource(content="Jane Doe"), store=store,
+            output_dir=tmp_path / "pdfs", live=True,
+        )
+
+    mock_optimize.assert_not_awaited()  # no re-tailoring
+    apply_mock.assert_awaited_once_with("v1", "Dear Acme, already written.", resume_title=None)
+    assert summary.applied == 1
+    assert store.get("v1")["status"] == "applied"
+
+
+@pytest.mark.asyncio
+async def test_live_run_keeps_ready_status_on_failed_apply_retry(tmp_path):
+    """A retry of a previously-ready vacancy that fails to apply must stay "ready"
+    (not "failed") so it's retried again next run without re-tailoring."""
+    from hr_breaker.autoapply.browser_apply import BrowserApplyError
+
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    store.upsert("v1", "ready", cover_letter="Dear Acme.", pdf_path="/tmp/v1.pdf")
+    apply_mock = AsyncMock(side_effect=BrowserApplyError("no submit button"))
+
+    with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls, \
+         patch("hr_breaker.autoapply.pipeline.BrowserApplier", return_value=_FakeBrowserApplier(apply_mock)):
+        mock_hh = mock_hh_cls.return_value
+        mock_hh.search_vacancies = AsyncMock(return_value=[])
+
+        summary = await run_autoapply(
+            triggers=["python"], resume_source=ResumeSource(content="Jane Doe"), store=store,
+            output_dir=tmp_path / "pdfs", live=True,
+        )
+
+    assert summary.applied == 0
+    assert summary.failed == 1
+    assert store.get("v1")["status"] == "ready"  # retryable next run, no re-tailor needed
+
+
+@pytest.mark.asyncio
+async def test_dry_run_does_not_retry_ready_vacancies(tmp_path):
+    """Without --live there's no browser session - pending "ready" vacancies must
+    be left untouched, not silently marked applied/skipped."""
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    store.upsert("v1", "ready", cover_letter="Dear Acme.", pdf_path="/tmp/v1.pdf")
+
+    with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls:
+        mock_hh = mock_hh_cls.return_value
+        mock_hh.search_vacancies = AsyncMock(return_value=[])
+
+        summary = await run_autoapply(
+            triggers=["python"], resume_source=ResumeSource(content="Jane Doe"), store=store,
+            output_dir=tmp_path / "pdfs", live=False,
+        )
+
+    assert summary.applied == 0
+    assert store.get("v1")["status"] == "ready"
+
+
+@pytest.mark.asyncio
 async def test_iteration_event_emitted_during_tailoring(tmp_path):
     """on_iteration passed into optimize_for_job should surface as an "iteration"
     event via emit()/on_event, carrying iteration/max_iterations/status/elapsed/eta."""

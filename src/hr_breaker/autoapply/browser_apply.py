@@ -20,6 +20,12 @@ https://habr.com/ru/articles/981764/) and are expected to need updates if
 hh.ru changes its DOM. On an unexpected page state, `apply()` saves a
 screenshot + the dialog's HTML to `debug_dir` and raises `BrowserApplyError`
 with the paths, instead of guessing.
+
+`ApplyOutcome.cover_letter_sent` is False when an application went through
+without the letter actually being attached (e.g. no dialog appeared, or the
+letter field wasn't found even after trying to reveal a hidden toggle) -
+callers should surface this rather than treating it as an ordinary success,
+and a debug dump is saved for that case too.
 """
 
 import asyncio
@@ -42,6 +48,7 @@ _APPLY_LINK_SELECTOR = '[data-qa="vacancy-response-link-top"]'
 _DIALOG_SELECTOR = '[role="dialog"]'
 _LETTER_INPUT_SELECTOR = '[data-qa="vacancy-response-popup-form-letter-input"]'
 _CLOSE_BUTTON_SELECTOR = '[data-qa="response-popup-close"]'
+_LETTER_TOGGLE_TEXT_RE = re.compile(r"сопроводительное письмо|написать письмо", re.IGNORECASE)
 _SUCCESS_TEXT_RE = re.compile(r"отклик отправлен", re.IGNORECASE)
 _SUBMIT_BUTTON_NAME_RE = re.compile(r"откликнут|отправ", re.IGNORECASE)
 _BLOCKED_TITLE_RE = re.compile(r"ddos-guard|checking your browser|подтвердите, что вы человек", re.IGNORECASE)
@@ -60,6 +67,7 @@ class CaptchaDetectedError(BrowserApplyError):
 class ApplyOutcome:
     status: str  # "applied" | "already_applied"
     detail: str = ""
+    cover_letter_sent: bool = True
 
 
 async def login_interactively(profile_dir: Path = PROFILE_DIR) -> None:
@@ -128,9 +136,17 @@ class BrowserApplier:
         try:
             await dialog.wait_for(timeout=DIALOG_TIMEOUT_MS)
         except Exception:
-            # Some vacancies apply directly without a cover-letter dialog.
+            # No modal dialog - either this vacancy auto-applies without asking for a
+            # cover letter, or the click navigated to a full-page form with the same
+            # fields. Try to find/fill the letter field on the page itself before
+            # concluding no cover letter is possible here.
+            letter_sent = await self._fill_letter_field(page, cover_letter)
+            if letter_sent:
+                await self._click_submit(page, page, vacancy_id)
             if await self._page_shows_success(page):
-                return ApplyOutcome("applied")
+                if not letter_sent:
+                    await self._dump_debug(page, vacancy_id, "applied-without-dialog")
+                return ApplyOutcome("applied", cover_letter_sent=letter_sent)
             await self._dump_debug(page, vacancy_id, "no-dialog-after-click")
             raise BrowserApplyError(
                 f"No response dialog appeared after clicking apply for vacancy {vacancy_id} "
@@ -140,18 +156,11 @@ class BrowserApplier:
         if resume_title:
             await self._select_resume(dialog, resume_title)
 
-        letter_input = dialog.locator(_LETTER_INPUT_SELECTOR).first
-        if await letter_input.count() > 0 and cover_letter:
-            await letter_input.fill(cover_letter)
+        letter_sent = await self._fill_letter_field(dialog, cover_letter)
+        if not letter_sent:
+            await self._dump_debug(page, vacancy_id, "no-letter-field-in-dialog")
 
-        submit_button = dialog.get_by_role("button", name=_SUBMIT_BUTTON_NAME_RE).first
-        if await submit_button.count() == 0:
-            await self._dump_debug(page, vacancy_id, "no-submit-button")
-            raise BrowserApplyError(
-                f"Could not find a submit button in the response dialog for vacancy {vacancy_id} "
-                f"(debug dump saved under {self.debug_dir})"
-            )
-        await submit_button.click()
+        await self._click_submit(dialog, page, vacancy_id)
 
         if not await self._page_shows_success(page, timeout=DIALOG_TIMEOUT_MS):
             await self._dump_debug(page, vacancy_id, "no-success-confirmation")
@@ -159,7 +168,36 @@ class BrowserApplier:
                 f"No success confirmation seen after submitting for vacancy {vacancy_id} "
                 f"(debug dump saved under {self.debug_dir}) - it may still have gone through, check manually"
             )
-        return ApplyOutcome("applied")
+        return ApplyOutcome("applied", cover_letter_sent=letter_sent)
+
+    async def _fill_letter_field(self, container, cover_letter: str) -> bool:
+        """Fill the cover-letter textarea if present, revealing it first if it's
+        hidden behind a toggle (e.g. "Написать сопроводительное письмо"). Returns
+        whether the letter was actually filled - the caller uses this to flag/log
+        an application that went out without one instead of treating it as a
+        silent full success."""
+        if not cover_letter:
+            return False
+        letter_input = container.locator(_LETTER_INPUT_SELECTOR).first
+        if await letter_input.count() == 0:
+            toggle = container.get_by_text(_LETTER_TOGGLE_TEXT_RE).first
+            if await toggle.count() > 0:
+                await toggle.click()
+                letter_input = container.locator(_LETTER_INPUT_SELECTOR).first
+        if await letter_input.count() == 0:
+            return False
+        await letter_input.fill(cover_letter)
+        return True
+
+    async def _click_submit(self, container, page: Page, vacancy_id: str) -> None:
+        submit_button = container.get_by_role("button", name=_SUBMIT_BUTTON_NAME_RE).first
+        if await submit_button.count() == 0:
+            await self._dump_debug(page, vacancy_id, "no-submit-button")
+            raise BrowserApplyError(
+                f"Could not find a submit button for vacancy {vacancy_id} "
+                f"(debug dump saved under {self.debug_dir})"
+            )
+        await submit_button.click()
 
     async def _select_resume(self, dialog, resume_title: str) -> None:
         option = dialog.get_by_text(resume_title, exact=False).first
