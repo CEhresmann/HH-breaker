@@ -70,18 +70,26 @@ src/hr_breaker/
 ### Filter System
 Filters run by priority (lower first). Default: parallel execution. Use `--seq` for early exit on failure.
 
-| Priority | Filter | Purpose |
-|----------|--------|---------|
-| 0 | ContentLengthChecker | Pre-render size check (fits in one page) |
-| 1 | DataValidator | Validate HTML structure |
-| 3 | HallucinationChecker | Detect fabricated claims not supported by original resume |
-| 4 | KeywordMatcher | TF-IDF keyword matching |
-| 5 | LLMChecker | Combined vision + ATS simulation |
-| 6 | VectorSimilarityMatcher | Embedding similarity (via litellm) |
-| 7 | AIGeneratedChecker | AI content detection |
-| 8 | TranslationQualityChecker | Translation quality (skipped when source == target language) |
+| Priority | Filter | Purpose | Local |
+|----------|--------|---------|-------|
+| 0 | ContentLengthChecker | Pre-render size check (fits in one page) | yes |
+| 1 | DataValidator | Validate HTML structure | yes |
+| 3 | HallucinationChecker | Detect fabricated claims not supported by original resume | no |
+| 4 | KeywordMatcher | TF-IDF keyword matching | yes |
+| 5 | LLMChecker | Combined vision + ATS simulation | no |
+| 6 | VectorSimilarityMatcher | Embedding similarity (via litellm) | no |
+| 7 | AIGeneratedChecker | AI content detection | no |
+| 8 | TranslationQualityChecker | Translation quality (skipped when source == target language) | no |
 
-To add filter: subclass `BaseFilter`, set `name` and `priority`, use `@FilterRegistry.register`
+`is_local` filters (no network/LLM call) run first in parallel mode too. Only if all of
+them pass do the remaining (LLM/network) filters run - otherwise they're marked
+`skipped=True` rather than paying for 4-5 LLM round trips on an iteration that needs
+another pass regardless. `ContentLengthChecker`/`LLMChecker` reuse `optimized.pdf_bytes`/
+`.page_count` when already rendered by `orchestration._render_and_extract`, instead of
+re-rendering the same HTML.
+
+To add filter: subclass `BaseFilter`, set `name` and `priority` (and `is_local = True` if
+it makes no network call), use `@FilterRegistry.register`
 
 ### Services
 - `renderer.py` - HTMLRenderer (WeasyPrint)
@@ -112,6 +120,10 @@ Dry run by default. `--max-apply` caps applications sent per run. Selectors in
 `browser_apply.py` are based on hh.ru's markup as of 2026-08 and expected to need
 updates if hh.ru changes its DOM - on an unexpected page state, `apply()` saves a
 screenshot + HTML dump under `output/autoapply/browser_debug/` instead of guessing.
+
+`--max-iterations` (default `2`, vs. `optimize`'s general default of `5`) caps
+optimizer iterations per vacancy - lower is faster, at the risk of a less-tuned
+resume/cover letter.
 
 ### Commands
 ```bash
@@ -144,6 +156,18 @@ uv run pytest tests/
 - LLM generates HTML body → WeasyPrint renders to PDF
 - Templates in `templates/` (resume_wrapper.html, resume_guide.md)
 - Name extraction uses LLM - handles any input format
+
+### Live Progress Reporting
+`utils/optimization_telemetry.py`'s `run_tracked_agent()` reports a `"start"` event
+(before the call) and a `"done"` event (after, with usage) to whatever reporter is set
+via `telemetry_reporter(...)` (a `ContextVar`-based hook, no-op if unset). `cli.py`'s
+`live_progress()` (used by both `optimize` and `autoapply run`) consumes these events:
+prints `✓ <component> done (Ns)` on completion, and a self-updating `… <component>
+running (Ns)` line every 5s while exactly one call is in flight (falls back to one line
+per component when several run concurrently, e.g. the parallel filter phase). All via
+`click.echo` directly to stdout - independent of `LOG_LEVEL`/`LOG_LEVEL_GENERAL`.
+`IterationETA` (same module) tracks per-iteration duration and estimates time
+remaining from a rolling average; wired into both CLIs' `on_iteration` callbacks.
 
 ### pydantic-ai-litellm Vision Bug
 

@@ -186,35 +186,40 @@ async def combined_review(
     Returns (result, pdf_bytes, page_count, render_warnings).
     pdf_bytes is None if rendering failed.
     """
-    renderer = get_renderer()
-
-    # Render PDF
-    content = optimized.html if optimized.html is not None else optimized.data
-    try:
-        if isinstance(content, str):
-            render_result = renderer.render(content)
-        else:
-            render_result = renderer.render_data(content)
-        pdf_bytes = render_result.pdf_bytes
-        render_warnings = render_result.warnings
-        page_count = render_result.page_count
-    except RenderError as e:
-        return (
-            CombinedReviewResult(
-                looks_professional=False,
-                visual_issues=[f"Rendering failed: {str(e)}"],
-                visual_feedback=str(e),
-                keyword_score=0.0,
-                experience_score=0.0,
-                education_score=0.0,
-                overall_fit_score=0.0,
-                disqualified=True,
-                ats_issues=["Cannot evaluate - rendering failed"],
-            ),
-            None,
-            0,
-            [],
-        )
+    # Reuse the PDF already rendered by the caller (orchestration._render_and_extract)
+    # if available, instead of rendering the same HTML/data again.
+    if optimized.pdf_bytes is not None and optimized.page_count is not None:
+        pdf_bytes = optimized.pdf_bytes
+        render_warnings = []
+        page_count = optimized.page_count
+    else:
+        renderer = get_renderer()
+        content = optimized.html if optimized.html is not None else optimized.data
+        try:
+            if isinstance(content, str):
+                render_result = renderer.render(content)
+            else:
+                render_result = renderer.render_data(content)
+            pdf_bytes = render_result.pdf_bytes
+            render_warnings = render_result.warnings
+            page_count = render_result.page_count
+        except RenderError as e:
+            return (
+                CombinedReviewResult(
+                    looks_professional=False,
+                    visual_issues=[f"Rendering failed: {str(e)}"],
+                    visual_feedback=str(e),
+                    keyword_score=0.0,
+                    experience_score=0.0,
+                    education_score=0.0,
+                    overall_fit_score=0.0,
+                    disqualified=True,
+                    ats_issues=["Cannot evaluate - rendering failed"],
+                ),
+                None,
+                0,
+                [],
+            )
 
     # Convert to image
     try:

@@ -6,7 +6,7 @@ from pydantic_ai import Agent
 from hr_breaker.config import get_flash_model, get_model_settings, get_settings
 from hr_breaker.models import JobPosting, OptimizedResume
 from hr_breaker.models.language import Language, get_language_safe
-from hr_breaker.utils.retry import run_with_retry
+from hr_breaker.utils.optimization_telemetry import run_tracked_agent
 
 SYSTEM_PROMPT = """You are a career coach writing a short cover letter (сопроводительное письмо)
 that accompanies a job application.
@@ -61,7 +61,7 @@ async def write_cover_letter(
     target_language = language or get_language_safe(job.language_code)
 
     agent = get_cover_letter_agent()
-    result = await run_with_retry(
-        agent.run, _build_prompt(resume_text, job, target_language)
+    result = await run_tracked_agent(
+        agent, _build_prompt(resume_text, job, target_language), component="CoverLetter"
     )
     return result.output.text.strip()

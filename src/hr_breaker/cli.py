@@ -1,6 +1,8 @@
 """CLI interface for HR-Breaker."""
 
 import asyncio
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import click
@@ -20,6 +22,76 @@ from hr_breaker.orchestration import optimize_for_job
 from hr_breaker.services import PDFStorage
 from hr_breaker.services.pdf_storage import generate_run_id
 from hr_breaker.services.pdf_parser import load_resume_content
+from hr_breaker.utils.optimization_telemetry import IterationETA, telemetry_reporter
+
+
+# ---------------------------------------------------------------------------
+# Live progress reporting - prints directly to stdout via click.echo, independent
+# of the logging module/LOG_LEVEL so it's always visible.
+# ---------------------------------------------------------------------------
+
+_TICK_INTERVAL_S = 5.0
+_LINE_WIDTH = 100  # padding to overwrite a longer previous line when using \r
+
+
+class _LiveProgress:
+    """Prints a self-updating line while an LLM call is in flight, driven by
+    optimization_telemetry's "start"/"done" reporter events."""
+
+    def __init__(self):
+        self._inflight: dict[str, float] = {}
+        self._task: asyncio.Task | None = None
+
+    def _report(self, payload: dict) -> None:
+        component = payload.get("component", "?")
+        if payload.get("event") == "start":
+            self._inflight[component] = time.monotonic()
+        elif payload.get("event") == "done":
+            start = self._inflight.pop(component, None)
+            elapsed = time.monotonic() - start if start is not None else 0.0
+            click.echo(f"  ✓ {component} done ({elapsed:.0f}s)".ljust(_LINE_WIDTH))
+
+    async def _tick_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(_TICK_INTERVAL_S)
+                if not self._inflight:
+                    continue
+                now = time.monotonic()
+                if len(self._inflight) == 1:
+                    (component, start), = self._inflight.items()
+                    line = f"  … {component} running ({now - start:.0f}s)"
+                    click.echo("\r" + line.ljust(_LINE_WIDTH), nl=False)
+                else:
+                    for component, start in self._inflight.items():
+                        click.echo(f"  … {component} running ({now - start:.0f}s)")
+        except asyncio.CancelledError:
+            pass
+
+    async def __aenter__(self) -> "_LiveProgress":
+        self._cm = telemetry_reporter(self._report)
+        self._cm.__enter__()
+        self._task = asyncio.create_task(self._tick_loop())
+        return self
+
+    async def __aexit__(self, *exc_info) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        self._cm.__exit__(*exc_info)
+        if self._inflight:
+            click.echo("".ljust(_LINE_WIDTH))  # clear any leftover \r-overwritten line
+
+
+@asynccontextmanager
+async def live_progress():
+    """Set up live per-LLM-call progress reporting for the duration of the block."""
+    progress = _LiveProgress()
+    async with progress:
+        yield progress
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +375,9 @@ def optimize(
     run_id = generate_run_id()
     debug_dir: Path | None = None
 
+    effective_max_iterations = max_iterations if max_iterations is not None else get_settings().max_iterations
+    eta_tracker = IterationETA(effective_max_iterations)
+
     def on_iteration(i, optimized, validation):
         status = "PASS" if validation.passed else "FAIL"
         scores = ", ".join(
@@ -310,7 +385,8 @@ def optimize(
             for r in validation.results
             if not r.skipped
         )
-        click.echo(f"  Iteration {i + 1}: {status} [{scores}]")
+        elapsed, eta = eta_tracker.tick(i)
+        click.echo(f"  Iteration {i + 1}/{effective_max_iterations}: {status} [{scores}] ({elapsed:.0f}s, ETA {eta:.0f}s)")
 
         if debug and debug_dir:
             if optimized.html:
@@ -364,17 +440,18 @@ def optimize(
         shame_mode = " [no-shame]" if no_shame else ""
         click.echo(f"Optimizing (mode: {mode}{shame_mode}, target: {target_language.english_name})...")
 
-        optimized, validation, _ = await optimize_for_job(
-            source,
-            max_iterations=max_iterations,
-            on_iteration=on_iteration,
-            job=job,
-            parallel=not seq,
-            no_shame=no_shame,
-            user_instructions=instructions,
-            language=target_language,
-            source_language=source_lang,
-        )
+        async with live_progress():
+            optimized, validation, _ = await optimize_for_job(
+                source,
+                max_iterations=max_iterations,
+                on_iteration=on_iteration,
+                job=job,
+                parallel=not seq,
+                no_shame=no_shame,
+                user_instructions=instructions,
+                language=target_language,
+                source_language=source_lang,
+            )
         return first_name, last_name, source, optimized, validation, job, target_language
 
     first_name, last_name, source, optimized, validation, job, target_language = asyncio.run(
@@ -636,6 +713,7 @@ def autoapply_browser_login(profile_dir: Path | None):
 @click.option("--exclude", "excluded_text", default=None, help="Comma-separated words - skip vacancies whose title contains any of them")
 @click.option("--per-page", default=100, show_default=True, help="Vacancies fetched per search page (hh.ru caps this at 100)")
 @click.option("--max-new", default=10, show_default=True, help="Max never-seen vacancies to tailor per run")
+@click.option("--max-iterations", default=2, show_default=True, help="Max optimizer iterations per vacancy - lower is faster but risks a lower-quality resume")
 @click.option("--lang", "lang_mode", default="from_job", help="from_job (default), from_resume, en, ru, ...")
 @click.option("--live", is_flag=True, help="Actually submit applications via a real browser session (DEFAULT IS DRY RUN)")
 @click.option("--max-apply", default=5, show_default=True, help="Safety cap: max applications actually sent in this run")
@@ -643,7 +721,7 @@ def autoapply_browser_login(profile_dir: Path | None):
 @click.option("--headed", is_flag=True, help="Show the apply browser window instead of running headless (useful for the first --live run, or to solve a CAPTCHA)")
 @click.option("--browser-profile-dir", type=click.Path(path_type=Path), default=None, help="Browser session dir from 'autoapply browser-login' (default: .cache/hh_browser_profile)")
 def autoapply_run(
-    triggers, profile_id, resume_path, area, excluded_text, per_page, max_new, lang_mode,
+    triggers, profile_id, resume_path, area, excluded_text, per_page, max_new, max_iterations, lang_mode,
     live, max_apply, resume_title, headed, browser_profile_dir,
 ):
     """Search hh.ru for TRIGGERS, tailor a resume + cover letter for each new vacancy.
@@ -683,6 +761,11 @@ def autoapply_run(
             click.echo(f"  APPLIED: {data['company']} - {data['title']}")
         elif event == "failed":
             click.echo(f"  failed: {data['company']} - {data['title']}: {data.get('error')}")
+        elif event == "iteration":
+            click.echo(
+                f"    [{data['title']}] iteration {data['iteration']}/{data['max_iterations']}: "
+                f"{data['status']} [{data['scores']}] ({data['elapsed']:.0f}s, ETA {data['eta']:.0f}s)"
+            )
         elif event == "skipped":
             click.echo(f"  skipped (not applied): {data['company']} - {data['title']}: {data.get('detail')}")
         elif event == "skipped_apply_cap":
@@ -691,24 +774,27 @@ def autoapply_run(
     if not live:
         click.echo("DRY RUN (no applications will be sent - pass --live to actually apply)\n")
 
-    summary = asyncio.run(
-        run_autoapply(
-            triggers=list(triggers),
-            profile_id=profile_id,
-            resume_source=resume_source,
-            area=area,
-            excluded_text=excluded_text,
-            per_page=per_page,
-            max_new=max_new,
-            max_apply_per_run=max_apply,
-            lang_mode=lang_mode,
-            live=live,
-            resume_title=resume_title,
-            browser_headless=not headed,
-            browser_profile_dir=profile_dir,
-            on_event=on_event,
-        )
-    )
+    async def _run():
+        async with live_progress():
+            return await run_autoapply(
+                triggers=list(triggers),
+                profile_id=profile_id,
+                resume_source=resume_source,
+                area=area,
+                excluded_text=excluded_text,
+                per_page=per_page,
+                max_new=max_new,
+                max_iterations=max_iterations,
+                max_apply_per_run=max_apply,
+                lang_mode=lang_mode,
+                live=live,
+                resume_title=resume_title,
+                browser_headless=not headed,
+                browser_profile_dir=profile_dir,
+                on_event=on_event,
+            )
+
+    summary = asyncio.run(_run())
 
     click.echo(
         f"\nDone. found={summary.found} already_seen={summary.already_seen} "

@@ -265,6 +265,45 @@ async def test_search_paginates_until_max_new_or_short_page(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_iteration_event_emitted_during_tailoring(tmp_path):
+    """on_iteration passed into optimize_for_job should surface as an "iteration"
+    event via emit()/on_event, carrying iteration/max_iterations/status/elapsed/eta."""
+    store = AutoApplyStore(tmp_path / "state.sqlite3")
+    source = ResumeSource(content="Jane Doe\nPython developer")
+    optimized = OptimizedResume(html="<p>tailored</p>", source_checksum=source.checksum, pdf_bytes=b"%PDF-fake", pdf_text="tailored resume text")
+    validation = ValidationResult(results=[])
+
+    async def fake_optimize_for_job(*args, on_iteration=None, **kwargs):
+        if on_iteration:
+            on_iteration(0, optimized, validation)
+        return optimized, validation, None
+
+    events = []
+
+    with patch("hr_breaker.autoapply.pipeline.HHClient") as mock_hh_cls, \
+         patch("hr_breaker.autoapply.pipeline.optimize_for_job", new=AsyncMock(side_effect=fake_optimize_for_job)), \
+         patch("hr_breaker.autoapply.pipeline.write_cover_letter", new=AsyncMock(return_value="Dear Acme...")), \
+         patch("hr_breaker.autoapply.pipeline.asyncio.sleep", new=AsyncMock()):
+        mock_hh = mock_hh_cls.return_value
+        mock_hh.search_vacancies = AsyncMock(return_value=[_make_vacancy("v1")])
+        mock_hh.get_vacancy_detail = AsyncMock(return_value=_make_vacancy("v1"))
+
+        await run_autoapply(
+            triggers=["python"], resume_source=source, store=store,
+            output_dir=tmp_path / "pdfs", live=False, max_iterations=3,
+            on_event=lambda event, data: events.append((event, data)),
+        )
+
+    iteration_events = [data for event, data in events if event == "iteration"]
+    assert len(iteration_events) == 1
+    assert iteration_events[0]["iteration"] == 1
+    assert iteration_events[0]["max_iterations"] == 3
+    assert iteration_events[0]["status"] == "PASS"
+    assert "elapsed" in iteration_events[0]
+    assert "eta" in iteration_events[0]
+
+
+@pytest.mark.asyncio
 async def test_excluded_text_filters_by_title(tmp_path):
     store = AutoApplyStore(tmp_path / "state.sqlite3")
     source = ResumeSource(content="Jane Doe\nPython developer")

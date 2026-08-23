@@ -66,6 +66,43 @@ def log_time(operation: str):
     logger.debug(f"{operation}: {elapsed:.2f}s")
 
 
+async def _evaluate_all(
+    filter_instances: list,
+    optimized: OptimizedResume,
+    job: JobPosting,
+    source: ResumeSource,
+    language: Language | None,
+    source_language: Language | None,
+    tag: str,
+) -> list[FilterResult]:
+    """Run a batch of filters concurrently, converting exceptions to failed FilterResults."""
+    if not filter_instances:
+        return []
+
+    start = time.perf_counter()
+    tasks = [f.evaluate(optimized, job, source, language=language, source_language=source_language) for f in filter_instances]
+    raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+    logger.debug(f"Filters ({tag}, parallel): {time.perf_counter() - start:.2f}s")
+
+    results = []
+    for f, result in zip(filter_instances, raw_results):
+        if isinstance(result, Exception):
+            logger.error(f"Filter {f.name} raised exception: {result}")
+            results.append(
+                FilterResult(
+                    filter_name=f.name,
+                    passed=False,
+                    score=0.0,
+                    threshold=getattr(f, "threshold", 0.5),
+                    issues=[f"Filter error: {type(result).__name__}: {result}"],
+                    suggestions=["Check filter implementation"],
+                )
+            )
+        else:
+            results.append(result)
+    return results
+
+
 async def run_filters(
     optimized: OptimizedResume,
     job: JobPosting,
@@ -79,31 +116,32 @@ async def run_filters(
     filters = FilterRegistry.all()
 
     if parallel:
-        # Run all filters concurrently
-        start = time.perf_counter()
+        # Local (no network/LLM) filters run first - if any fails, the iteration
+        # needs another pass regardless of what the expensive filters would say,
+        # so skip them rather than paying for 4-5 LLM/network round trips for nothing.
         filter_instances = [filter_cls(no_shame=no_shame) for filter_cls in filters]
-        tasks = [f.evaluate(optimized, job, source, language=language, source_language=source_language) for f in filter_instances]
-        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
-        logger.debug(f"All filters (parallel): {time.perf_counter() - start:.2f}s")
+        local_instances = [f for f in filter_instances if getattr(f, "is_local", False)]
+        remote_instances = [f for f in filter_instances if not getattr(f, "is_local", False)]
 
-        # Convert exceptions to failed FilterResults
-        results = []
-        for f, result in zip(filter_instances, raw_results):
-            if isinstance(result, Exception):
-                logger.error(f"Filter {f.name} raised exception: {result}")
-                results.append(
-                    FilterResult(
-                        filter_name=f.name,
-                        passed=False,
-                        score=0.0,
-                        threshold=getattr(f, "threshold", 0.5),
-                        issues=[f"Filter error: {type(result).__name__}: {result}"],
-                        suggestions=["Check filter implementation"],
-                    )
+        local_results = await _evaluate_all(local_instances, optimized, job, source, language, source_language, tag="local")
+
+        if all(r.passed for r in local_results):
+            remote_results = await _evaluate_all(remote_instances, optimized, job, source, language, source_language, tag="remote")
+        else:
+            remote_results = [
+                FilterResult(
+                    filter_name=f.name,
+                    passed=True,
+                    score=1.0,
+                    threshold=getattr(f, "threshold", 0.5),
+                    skipped=True,
+                    issues=[],
+                    suggestions=[],
                 )
-            else:
-                results.append(result)
-        return ValidationResult(results=results)
+                for f in remote_instances
+            ]
+
+        return ValidationResult(results=local_results + remote_results)
 
     # Sequential mode: sorted by priority, early exit on failure
     results = []

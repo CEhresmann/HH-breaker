@@ -37,6 +37,7 @@ class ContentLengthChecker(BaseFilter):
     name = "ContentLengthChecker"
     priority = 0  # Runs BEFORE everything
     threshold = 1.0
+    is_local = True
 
     async def evaluate(
         self,
@@ -56,20 +57,25 @@ class ContentLengthChecker(BaseFilter):
                 suggestions=[],
             )
 
-        try:
-            renderer = get_renderer()
-            render_result = renderer.render(optimized.html)
-            page_count = render_result.page_count
-            pdf_bytes = render_result.pdf_bytes
-        except RenderError as e:
-            return FilterResult(
-                filter_name=self.name,
-                passed=False,
-                score=0.0,
-                threshold=self.threshold,
-                issues=[f"Rendering failed: {str(e)}"],
-                suggestions=["Fix HTML content to allow rendering"],
-            )
+        if optimized.pdf_bytes is not None and optimized.page_count is not None:
+            # Already rendered by the caller (orchestration._render_and_extract) - reuse it.
+            page_count = optimized.page_count
+            pdf_bytes = optimized.pdf_bytes
+        else:
+            try:
+                renderer = get_renderer()
+                render_result = renderer.render(optimized.html)
+                page_count = render_result.page_count
+                pdf_bytes = render_result.pdf_bytes
+            except RenderError as e:
+                return FilterResult(
+                    filter_name=self.name,
+                    passed=False,
+                    score=0.0,
+                    threshold=self.threshold,
+                    issues=[f"Rendering failed: {str(e)}"],
+                    suggestions=["Fix HTML content to allow rendering"],
+                )
 
         if page_count > 2:
             return FilterResult(

@@ -4,12 +4,46 @@ from unittest.mock import AsyncMock
 import pytest
 
 from hr_breaker.utils.optimization_telemetry import (
+    IterationETA,
     accumulate_usage_totals,
     report_usage,
     run_tracked_agent,
     telemetry_reporter,
     zero_usage_totals,
 )
+
+
+def test_iteration_eta_estimates_remaining_time_from_rolling_average(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(
+        "hr_breaker.utils.optimization_telemetry.time.monotonic", lambda: clock[0]
+    )
+
+    eta = IterationETA(max_iterations=4)  # constructed at clock=0.0
+
+    clock[0] = 10.0
+    elapsed0, eta0 = eta.tick(0)
+    assert elapsed0 == 10.0
+    assert eta0 == 30.0  # 3 remaining iterations * 10.0 avg
+
+    clock[0] = 30.0
+    elapsed1, eta1 = eta.tick(1)
+    assert elapsed1 == 20.0
+    assert eta1 == 30.0  # avg=15.0 * 2 remaining
+
+
+def test_iteration_eta_is_zero_on_last_iteration(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(
+        "hr_breaker.utils.optimization_telemetry.time.monotonic", lambda: clock[0]
+    )
+
+    eta = IterationETA(max_iterations=2)
+    clock[0] = 5.0
+    eta.tick(0)
+    clock[0] = 10.0
+    _, eta1 = eta.tick(1)
+    assert eta1 == 0.0
 
 
 def test_accumulate_usage_totals_adds_usage_entry_values():
@@ -55,15 +89,21 @@ async def test_run_tracked_agent_reports_usage():
 
     assert observed is result
     agent.run.assert_called_once_with("hello")
-    assert len(captured) == 1
+    assert len(captured) == 2
+
+    assert captured[0]["event"] == "start"
     assert captured[0]["component"] == "LLMChecker"
     assert captured[0]["model"] == "openai/gpt-5.3-codex"
-    assert captured[0]["provider"] == "openai"
-    assert captured[0]["requests"] == 1
-    assert captured[0]["input_tokens"] == 123
-    assert captured[0]["output_tokens"] == 45
-    assert captured[0]["cache_read_tokens"] == 67
-    assert captured[0]["cache_write_tokens"] == 8
+
+    assert captured[1]["event"] == "done"
+    assert captured[1]["component"] == "LLMChecker"
+    assert captured[1]["model"] == "openai/gpt-5.3-codex"
+    assert captured[1]["provider"] == "openai"
+    assert captured[1]["requests"] == 1
+    assert captured[1]["input_tokens"] == 123
+    assert captured[1]["output_tokens"] == 45
+    assert captured[1]["cache_read_tokens"] == 67
+    assert captured[1]["cache_write_tokens"] == 8
 
 
 
