@@ -47,6 +47,9 @@ _INITIAL_STATE_RE = re.compile(
     r'<template style="display:none" id="HH-Lux-InitialState">(.*?)</template>', re.DOTALL
 )
 
+# Standard hh.ru "Опыт работы" values for search_vacancies(experience=...).
+EXPERIENCE_VALUES = ("noExperience", "between1And3", "between3And6", "moreThan6")
+
 
 class HHApiError(Exception):
     """Raised when the hh.ru API returns an error response."""
@@ -133,6 +136,7 @@ class HHClient:
         self,
         text: str,
         area: str | None = None,
+        experience: str | None = None,
         per_page: int = 50,
         page: int = 0,
         professional_role: str | None = None,
@@ -142,12 +146,18 @@ class HHClient:
         Results are the compact search-listing shape - no description/key_skills.
         Call `get_vacancy_detail()` per vacancy to fill those in. `per_page` above 100
         is silently reset to 50 server-side, so it's clamped here to stay predictable.
+
+        `experience` is one of the standard hh.ru values (noExperience, between1And3,
+        between3And6, moreThan6) - confirmed live: the four values partition the
+        unfiltered result count exactly, an invalid value is silently ignored.
         """
         params: dict[str, Any] = {
             "text": text, "items_on_page": min(per_page, 100), "page": page,
         }
         if area:
             params["area"] = area
+        if experience:
+            params["experience"] = experience
         if professional_role:
             params["professional_role"] = professional_role
 

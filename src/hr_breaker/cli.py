@@ -705,11 +705,17 @@ def autoapply_browser_login(profile_dir: Path | None):
     click.echo("Session saved. Run 'hr-breaker autoapply run --live ...' to use it.")
 
 
+# Mirrors hh_client.EXPERIENCE_VALUES - duplicated (not imported) so this module doesn't
+# have to pull in the autoapply package (and its Playwright dependency) at CLI load time.
+_EXPERIENCE_VALUES = ("noExperience", "between1And3", "between3And6", "moreThan6")
+
+
 @autoapply.command("run")
 @click.option("--trigger", "-t", "triggers", multiple=True, required=True, help="Trigger keyword to search for (repeatable)")
 @click.option("--profile", "profile_id", default=None, help="Profile ID to tailor from (see 'hr-breaker profile')")
 @click.option("--resume", "resume_path", default=None, type=click.Path(exists=True, path_type=Path), help="Or: a raw resume file instead of a profile")
 @click.option("--area", default=None, help="hh.ru area/region id (see GET /areas) to restrict search to")
+@click.option("--experience", default=None, type=click.Choice(_EXPERIENCE_VALUES), help="hh.ru experience filter")
 @click.option("--exclude", "excluded_text", default=None, help="Comma-separated words - skip vacancies whose title contains any of them")
 @click.option("--per-page", default=100, show_default=True, help="Vacancies fetched per search page (hh.ru caps this at 100)")
 @click.option("--max-new", default=10, show_default=True, help="Max never-seen vacancies to tailor per run")
@@ -721,7 +727,7 @@ def autoapply_browser_login(profile_dir: Path | None):
 @click.option("--headed", is_flag=True, help="Show the apply browser window instead of running headless (useful for the first --live run, or to solve a CAPTCHA)")
 @click.option("--browser-profile-dir", type=click.Path(path_type=Path), default=None, help="Browser session dir from 'autoapply browser-login' (default: .cache/hh_browser_profile)")
 def autoapply_run(
-    triggers, profile_id, resume_path, area, excluded_text, per_page, max_new, max_iterations, lang_mode,
+    triggers, profile_id, resume_path, area, experience, excluded_text, per_page, max_new, max_iterations, lang_mode,
     live, max_apply, resume_title, headed, browser_profile_dir,
 ):
     """Search hh.ru for TRIGGERS, tailor a resume + cover letter for each new vacancy.
@@ -781,6 +787,7 @@ def autoapply_run(
                 profile_id=profile_id,
                 resume_source=resume_source,
                 area=area,
+                experience=experience,
                 excluded_text=excluded_text,
                 per_page=per_page,
                 max_new=max_new,
